@@ -1,0 +1,16 @@
+# Environment variables
+.env
+
+# Downloaded videos
+downloads/
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db 
