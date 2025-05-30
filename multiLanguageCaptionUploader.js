@@ -12,16 +12,54 @@ const config = {
 };
 
 /**
- * Uploads a VTT caption file to API.video for a specific language
+ * Checks if captions already exist for a specific video and language
+ */
+async function checkExistingCaptions(videoId, languageCode, accessToken) {
+    try {
+        const response = await axios.get(
+            `https://ws.api.video/videos/${videoId}/captions/${languageCode}`,
+            {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        
+        // If we get a successful response, captions exist
+        return response.status === 200;
+        
+    } catch (error) {
+        // If we get a 404, captions don't exist
+        if (error.response?.status === 404) {
+            return false;
+        }
+        
+        // For other errors, assume captions don't exist and log the error
+        console.log(`⚠️  Could not check existing captions for ${languageCode}: ${error.response?.status || error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Uploads or updates a VTT caption file to API.video for a specific language
  */
 async function uploadCaptionForLanguage(videoId, vttFilePath, languageCode, accessToken) {
     const filename = path.basename(vttFilePath);
     const languageInfo = languageMapping[languageCode];
     
     try {
-        console.log(`📤 Uploading ${languageInfo.name} caption for video ${videoId}...`);
+        // Check if captions already exist
+        console.log(`🔍 Checking existing captions for ${languageInfo.name}...`);
+        const captionsExist = await checkExistingCaptions(videoId, languageCode, accessToken);
+        
+        const method = captionsExist ? 'PATCH' : 'POST';
+        const action = captionsExist ? 'Updating' : 'Uploading';
+        
+        console.log(`📤 ${action} ${languageInfo.name} caption for video ${videoId}...`);
         console.log(`    File: ${filename}`);
         console.log(`    Language: ${languageInfo.name} (${languageCode})`);
+        console.log(`    Method: ${method} ${captionsExist ? '(updating existing)' : '(creating new)'}`);
         
         // Read the VTT file
         const vttContent = fs.readFileSync(vttFilePath);
@@ -34,29 +72,52 @@ async function uploadCaptionForLanguage(videoId, vttFilePath, languageCode, acce
             contentType: 'text/vtt'
         });
         
-        // Upload caption to API.video
-        const response = await axios.post(
-            `https://ws.api.video/videos/${videoId}/captions/${languageInfo.apiVideoCode}`,
-            formData,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    ...formData.getHeaders()
-                }
+        // Upload or update caption to API.video
+        const response = await axios({
+            method: method,
+            url: `https://ws.api.video/videos/${videoId}/captions/${languageInfo.apiVideoCode}`,
+            data: formData,
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                ...formData.getHeaders()
             }
-        );
+        });
         
         if (response.status === 200 || response.status === 201) {
-            console.log(`✅ ${languageInfo.name} caption uploaded successfully for video ${videoId}`);
-            return { success: true, videoId, filename, languageCode, languageName: languageInfo.name };
+            const successAction = captionsExist ? 'updated' : 'uploaded';
+            console.log(`✅ ${languageInfo.name} caption ${successAction} successfully for video ${videoId}`);
+            return { 
+                success: true, 
+                videoId, 
+                filename, 
+                languageCode, 
+                languageName: languageInfo.name,
+                action: successAction,
+                method: method
+            };
         } else {
-            console.error(`❌ Failed to upload ${languageInfo.name} caption for video ${videoId}: ${response.status}`);
-            return { success: false, videoId, filename, languageCode, languageName: languageInfo.name, error: `HTTP ${response.status}` };
+            console.error(`❌ Failed to ${action.toLowerCase()} ${languageInfo.name} caption for video ${videoId}: ${response.status}`);
+            return { 
+                success: false, 
+                videoId, 
+                filename, 
+                languageCode, 
+                languageName: languageInfo.name, 
+                error: `HTTP ${response.status}`,
+                method: method
+            };
         }
         
     } catch (error) {
         console.error(`❌ Error uploading ${languageInfo.name} caption for video ${videoId}:`, error.response?.data || error.message);
-        return { success: false, videoId, filename, languageCode, languageName: languageInfo.name, error: error.message };
+        return { 
+            success: false, 
+            videoId, 
+            filename, 
+            languageCode, 
+            languageName: languageInfo.name, 
+            error: error.message 
+        };
     }
 }
 
@@ -266,12 +327,24 @@ async function uploadAllMultiLanguageCaptions() {
         console.log(`✅ Videos with successful uploads: ${successCount}`);
         console.log(`❌ Videos with failed uploads: ${failureCount}`);
         
+        // Action-specific summary
+        const createdCount = results.filter(r => r.success && r.action === 'uploaded').length;
+        const updatedCount = results.filter(r => r.success && r.action === 'updated').length;
+        
+        console.log(`\n🔄 Caption Actions Summary:`);
+        console.log(`🆕 New captions created: ${createdCount}`);
+        console.log(`📝 Existing captions updated: ${updatedCount}`);
+        console.log(`📊 Total successful operations: ${createdCount + updatedCount}`);
+        
         // Language-specific summary
         const languageSummary = {};
         config.captionLanguages.forEach(lang => {
+            const langResults = results.filter(r => r.languageCode === lang);
             languageSummary[lang] = {
-                successful: results.filter(r => r.languageCode === lang && r.success).length,
-                failed: results.filter(r => r.languageCode === lang && !r.success).length,
+                successful: langResults.filter(r => r.success).length,
+                failed: langResults.filter(r => !r.success).length,
+                created: langResults.filter(r => r.success && r.action === 'uploaded').length,
+                updated: langResults.filter(r => r.success && r.action === 'updated').length,
                 name: languageMapping[lang].name
             };
         });
@@ -280,7 +353,7 @@ async function uploadAllMultiLanguageCaptions() {
         Object.keys(languageSummary).forEach(lang => {
             const summary = languageSummary[lang];
             if (summary.successful > 0 || summary.failed > 0) {
-                console.log(`   ${summary.name}: ${summary.successful} successful, ${summary.failed} failed`);
+                console.log(`   ${summary.name}: ${summary.successful} successful (${summary.created} created, ${summary.updated} updated), ${summary.failed} failed`);
             }
         });
         

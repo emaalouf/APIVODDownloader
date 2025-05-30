@@ -184,20 +184,29 @@ $ node multiLanguageCaptionUploader.js
 🆔 Video ID: vimRsLwx8pzlV2T5xrZT4Ka
 🌐 Languages: Arabic, English, French, Spanish, Italian
 
-📤 Uploading Arabic caption for video vimRsLwx8pzlV2T5xrZT4Ka...
-✅ Arabic caption uploaded successfully for video vimRsLwx8pzlV2T5xrZT4Ka
+🔍 Checking existing captions for Arabic...
+📤 Updating Arabic caption for video vimRsLwx8pzlV2T5xrZT4Ka...
+    Method: PATCH (updating existing)
+✅ Arabic caption updated successfully for video vimRsLwx8pzlV2T5xrZT4Ka
 
+🔍 Checking existing captions for English...
 📤 Uploading English caption for video vimRsLwx8pzlV2T5xrZT4Ka...
+    Method: POST (creating new)
 ✅ English caption uploaded successfully for video vimRsLwx8pzlV2T5xrZT4Ka
 
 ...and so on
 
+🔄 Caption Actions Summary:
+🆕 New captions created: 3
+📝 Existing captions updated: 2
+📊 Total successful operations: 5
+
 🌐 Language-specific Summary:
-   Arabic: 1 successful, 0 failed
-   English: 1 successful, 0 failed
-   French: 1 successful, 0 failed
-   Spanish: 1 successful, 0 failed
-   Italian: 1 successful, 0 failed
+   Arabic: 1 successful (0 created, 1 updated), 0 failed
+   English: 1 successful (1 created, 0 updated), 0 failed
+   French: 1 successful (1 created, 0 updated), 0 failed
+   Spanish: 1 successful (1 created, 0 updated), 0 failed
+   Italian: 1 successful (0 created, 1 updated), 0 failed
 
 ✅ Successfully uploaded multi-language captions for 1 videos!
 ```
@@ -361,3 +370,47 @@ After setup, you'll have:
 - ✅ Compatible with existing workflow
 
 Perfect for international content, education, accessibility, and reaching global audiences with professional-quality multilingual captions! 🌍 
+
+## 🔄 Smart Caption Management
+
+The system automatically detects and handles existing captions:
+
+### **Auto-Detection Logic:**
+- 🔍 **Checks existing captions** for each video/language combination
+- 📝 **PATCH updates** existing captions if they're already present
+- 🆕 **POST creates** new captions if they don't exist
+- 📊 **Reports detailed statistics** on created vs updated captions
+
+### **API Endpoints Used:**
+```bash
+# Check if captions exist
+GET https://ws.api.video/videos/{videoId}/captions/{language}
+
+# Create new captions (if none exist)
+POST https://ws.api.video/videos/{videoId}/captions/{language}
+
+# Update existing captions (if they exist)
+PATCH https://ws.api.video/videos/{videoId}/captions/{language}
+```
+
+### **Benefits:**
+- ✅ **Safe re-runs** - Won't duplicate captions
+- ✅ **Update workflow** - Improve captions by re-running the generator
+- ✅ **Selective updates** - Only updates languages that changed
+- ✅ **Clear reporting** - Know exactly what was created vs updated
+
+### **Example Scenarios:**
+
+#### **First Run (All New):**
+```
+🆕 New captions created: 2,370 (474 videos × 5 languages)
+📝 Existing captions updated: 0
+```
+
+#### **Re-run After Improvements:**
+```
+🆕 New captions created: 47 (new videos added)
+📝 Existing captions updated: 2,323 (improved existing captions)
+```
+
+## 🚀 Multi-Language Workflow
