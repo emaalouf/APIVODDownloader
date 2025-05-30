@@ -26,9 +26,16 @@ async function workerFunction() {
     const results = [];
     
     for (const videoPath of videoBatch) {
+        let tempWavPath = null;
+        
         try {
             console.log(`🔄 Worker ${workerId}: Processing ${path.basename(videoPath)}`);
             const startTime = Date.now();
+            
+            // Track potential temp wav file path for cleanup
+            const videoFilename = path.basename(videoPath);
+            const videoTitle = videoFilename.replace(/^\[[^\]]+\]_/, '').replace(/\.mp4$/, '');
+            tempWavPath = path.join(config.vttOutputFolder, `${videoTitle}_temp.wav`);
             
             const generatedFiles = await generateMultiLanguageVttForVideo(videoPath);
             
@@ -45,6 +52,17 @@ async function workerFunction() {
             
         } catch (error) {
             console.error(`❌ Worker ${workerId}: Failed ${path.basename(videoPath)}: ${error.message}`);
+            
+            // Cleanup temp wav file if it exists and processing failed
+            if (tempWavPath && fs.existsSync(tempWavPath)) {
+                try {
+                    fs.unlinkSync(tempWavPath);
+                    console.log(`🗑️  Worker ${workerId}: Cleaned up temp file for ${path.basename(videoPath)}`);
+                } catch (cleanupError) {
+                    console.error(`❌ Worker ${workerId}: Failed to cleanup temp file: ${cleanupError.message}`);
+                }
+            }
+            
             results.push({
                 videoPath,
                 success: false,
@@ -115,6 +133,23 @@ async function processVideosInParallel(videoFiles) {
                 worker.terminate();
                 activeWorkers.delete(workerId);
                 
+                // Clean up potential temp WAV files for timed out batch
+                console.log(`🗑️  Cleaning up temp files for timed out worker ${workerId}...`);
+                batch.forEach(videoPath => {
+                    const videoFilename = path.basename(videoPath);
+                    const videoTitle = videoFilename.replace(/^\[[^\]]+\]_/, '').replace(/\.mp4$/, '');
+                    const tempWavPath = path.join(config.vttOutputFolder, `${videoTitle}_temp.wav`);
+                    
+                    if (fs.existsSync(tempWavPath)) {
+                        try {
+                            fs.unlinkSync(tempWavPath);
+                            console.log(`   🗑️  Removed: ${videoTitle}_temp.wav`);
+                        } catch (cleanupError) {
+                            console.error(`   ❌ Failed to cleanup: ${tempWavPath}`);
+                        }
+                    }
+                });
+                
                 // Mark batch as failed
                 const failedResults = batch.map(videoPath => ({
                     videoPath,
@@ -148,6 +183,23 @@ async function processVideosInParallel(videoFiles) {
                 console.error(`❌ Worker ${workerId} error:`, error.message);
                 clearTimeout(workerInfo.timeout);
                 activeWorkers.delete(workerId);
+                
+                // Clean up potential temp WAV files for errored batch
+                console.log(`🗑️  Cleaning up temp files for errored worker ${workerId}...`);
+                batch.forEach(videoPath => {
+                    const videoFilename = path.basename(videoPath);
+                    const videoTitle = videoFilename.replace(/^\[[^\]]+\]_/, '').replace(/\.mp4$/, '');
+                    const tempWavPath = path.join(config.vttOutputFolder, `${videoTitle}_temp.wav`);
+                    
+                    if (fs.existsSync(tempWavPath)) {
+                        try {
+                            fs.unlinkSync(tempWavPath);
+                            console.log(`   🗑️  Removed: ${videoTitle}_temp.wav`);
+                        } catch (cleanupError) {
+                            console.error(`   ❌ Failed to cleanup: ${tempWavPath}`);
+                        }
+                    }
+                });
                 
                 // Mark batch as failed
                 const failedResults = batch.map(videoPath => ({
@@ -267,6 +319,33 @@ async function generateMultiLanguageVttParallel() {
         }
         
         console.log(`\n💡 Files with [videoId] prefix are ready for multi-language caption upload!`);
+        
+        // Final cleanup: Remove any remaining temp WAV files
+        console.log(`\n🧹 Performing final cleanup of temporary files...`);
+        if (fs.existsSync(config.vttOutputFolder)) {
+            const files = fs.readdirSync(config.vttOutputFolder);
+            const tempWavFiles = files.filter(file => file.endsWith('_temp.wav'));
+            
+            if (tempWavFiles.length > 0) {
+                console.log(`🗑️  Found ${tempWavFiles.length} remaining temp files to clean up`);
+                let cleanedCount = 0;
+                
+                tempWavFiles.forEach(file => {
+                    const filePath = path.join(config.vttOutputFolder, file);
+                    try {
+                        fs.unlinkSync(filePath);
+                        console.log(`   🗑️  Removed: ${file}`);
+                        cleanedCount++;
+                    } catch (error) {
+                        console.error(`   ❌ Failed to remove ${file}: ${error.message}`);
+                    }
+                });
+                
+                console.log(`✨ Final cleanup completed: ${cleanedCount} files removed`);
+            } else {
+                console.log(`✅ No temporary files found - cleanup not needed`);
+            }
+        }
         
     } catch (error) {
         console.error('❌ Error in parallel VTT generation:', error.message);
