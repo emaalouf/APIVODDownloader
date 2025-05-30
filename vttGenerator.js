@@ -16,7 +16,8 @@ const config = {
     openaiApiKey: process.env.OPENAI_API_KEY,
     whisperModel: process.env.WHISPER_MODEL || 'base',
     silenceThreshold: parseFloat(process.env.SILENCE_THRESHOLD) || 0.01,
-    musicDetectionEnabled: process.env.MUSIC_DETECTION_ENABLED === 'true'
+    musicDetectionEnabled: process.env.MUSIC_DETECTION_ENABLED === 'true',
+    forceLanguage: process.env.FORCE_LANGUAGE || null // Set to 'en', 'ar', etc. to force a language, or null for auto-detect
 };
 
 // Initialize OpenAI client if API key is provided
@@ -144,9 +145,7 @@ async function analyzeAudio(audioPath) {
             .on('end', () => {
                 console.log(`📊 Found ${silenceSegments.length} silence segments`);
                 
-                // Simple music detection heuristic (segments with consistent amplitude)
                 if (config.musicDetectionEnabled) {
-                    // This is a simplified approach - in production, you might use more sophisticated audio analysis
                     console.log(`🎼 Music detection enabled (simplified heuristic)`);
                 }
                 
@@ -159,6 +158,151 @@ async function analyzeAudio(audioPath) {
         
         // Save to null (we just want the analysis, not the output)
         silenceDetection.save('/dev/null');
+    });
+}
+
+/**
+ * Transcribes audio using local Whisper (auto-detect language or forced language)
+ */
+async function transcribeWithLocalWhisper(audioPath, forceLanguage = null) {
+    const languageInfo = forceLanguage ? `forced to ${forceLanguage}` : 'auto-detected';
+    console.log(`🎤 Transcribing with local Whisper (${config.whisperModel} model, language ${languageInfo})...`);
+    
+    const whisperInstalled = await checkWhisperInstalled();
+    
+    if (!whisperInstalled) {
+        console.log(`❌ Local Whisper not found.`);
+        return {
+            text: '[Local Whisper not installed]',
+            segments: [{
+                start: 0,
+                end: 10,
+                text: '[Local Whisper not installed]'
+            }],
+            language: 'unknown'
+        };
+    }
+    
+    return new Promise((resolve, reject) => {
+        const outputDir = path.dirname(audioPath);
+        const baseFilename = path.basename(audioPath, path.extname(audioPath));
+        
+        console.log(`📝 Running whisper transcription...`);
+        
+        // Build whisper command
+        const whisperArgs = [
+            audioPath,
+            '--model', config.whisperModel,
+            '--output_format', 'json',
+            '--output_dir', outputDir,
+            '--task', 'transcribe'
+        ];
+        
+        // Add language parameter if forced
+        if (forceLanguage) {
+            whisperArgs.push('--language', forceLanguage);
+        }
+        
+        console.log(`🔄 Executing: whisper ${whisperArgs.join(' ')}`);
+        
+        const whisperProcess = spawn('whisper', whisperArgs);
+        
+        let stdout = '';
+        let stderr = '';
+        
+        whisperProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+            const progressMatch = data.toString().match(/(\d+)%/);
+            if (progressMatch) {
+                process.stdout.write(`\r🎤 Transcribing: ${progressMatch[1]}%`);
+            }
+        });
+        
+        whisperProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+            const progressMatch = data.toString().match(/(\d+)%/);
+            if (progressMatch) {
+                process.stdout.write(`\r🎤 Transcribing: ${progressMatch[1]}%`);
+            }
+        });
+        
+        whisperProcess.on('close', (code) => {
+            console.log(`\n🎤 Whisper transcription completed (exit code: ${code})`);
+            
+            if (code !== 0) {
+                console.error(`❌ Whisper failed with exit code ${code}`);
+                resolve({
+                    text: '[Whisper transcription failed]',
+                    segments: [{
+                        start: 0,
+                        end: 10,
+                        text: '[Whisper transcription failed]'
+                    }],
+                    language: 'unknown'
+                });
+                return;
+            }
+            
+            try {
+                // Find the JSON output file (Whisper creates filename based on input)
+                const audioBasename = path.basename(audioPath, path.extname(audioPath));
+                const generatedJsonPath = path.join(outputDir, `${audioBasename}.json`);
+                
+                if (fs.existsSync(generatedJsonPath)) {
+                    const jsonContent = fs.readFileSync(generatedJsonPath, 'utf8');
+                    const transcription = JSON.parse(jsonContent);
+                    
+                    console.log(`✅ Transcription loaded (detected language: ${transcription.language || 'unknown'})`);
+                    
+                    // Clean up JSON file
+                    fs.unlinkSync(generatedJsonPath);
+                    
+                    // Convert Whisper format to standardized format
+                    const convertedTranscription = {
+                        text: transcription.text,
+                        segments: transcription.segments || [],
+                        language: transcription.language || 'unknown'
+                    };
+                    
+                    resolve(convertedTranscription);
+                } else {
+                    console.error(`❌ JSON output file not found`);
+                    resolve({
+                        text: '[Transcription file not found]',
+                        segments: [{
+                            start: 0,
+                            end: 10,
+                            text: '[Transcription file not found]'
+                        }],
+                        language: 'unknown'
+                    });
+                }
+            } catch (error) {
+                console.error(`❌ Error reading transcription JSON:`, error.message);
+                resolve({
+                    text: '[Error processing transcription]',
+                    segments: [{
+                        start: 0,
+                        end: 10,
+                        text: '[Error processing transcription]'
+                    }],
+                    language: 'unknown'
+                });
+            }
+        });
+        
+        whisperProcess.on('error', (error) => {
+            console.error(`❌ Failed to start whisper process:`, error.message);
+            resolve({
+                text: '[Failed to start Whisper]',
+                segments: [{
+                    start: 0,
+                    end: 10,
+                    text: '[Failed to start Whisper]'
+                }],
+                language: 'unknown'
+            });
+        });
     });
 }
 
@@ -176,7 +320,11 @@ async function transcribeWithOpenAI(audioPath) {
             timestamp_granularities: ['segment']
         });
         
-        return transcription;
+        return {
+            text: transcription.text,
+            segments: transcription.segments || [],
+            language: transcription.language || 'unknown'
+        };
     } catch (error) {
         console.error(`❌ OpenAI Whisper API error:`, error.message);
         throw error;
@@ -184,124 +332,10 @@ async function transcribeWithOpenAI(audioPath) {
 }
 
 /**
- * Transcribes audio using local Whisper installation
- */
-async function transcribeWithLocalWhisper(audioPath) {
-    console.log(`🎤 Transcribing with local Whisper (${config.whisperModel} model)...`);
-    
-    const whisperInstalled = await checkWhisperInstalled();
-    
-    if (!whisperInstalled) {
-        console.log(`❌ Local Whisper not found. Installing instructions:`);
-        console.log(`   pip install openai-whisper`);
-        console.log(`   Or set OPENAI_API_KEY in your .env file to use API`);
-        
-        // Return placeholder transcription
-        return {
-            text: "[Local Whisper not installed. Run: pip install openai-whisper]",
-            segments: [
-                {
-                    start: 0,
-                    end: 10,
-                    text: "[Local Whisper not installed. Run: pip install openai-whisper]"
-                }
-            ]
-        };
-    }
-    
-    return new Promise((resolve, reject) => {
-        const outputDir = path.dirname(audioPath);
-        const baseFilename = path.basename(audioPath, path.extname(audioPath));
-        const jsonOutputPath = path.join(outputDir, `${baseFilename}.json`);
-        
-        console.log(`📝 Running whisper transcription...`);
-        
-        // Run whisper command with JSON output
-        const whisperArgs = [
-            audioPath,
-            '--model', config.whisperModel,
-            '--output_format', 'json',
-            '--output_dir', outputDir,
-            '--language', 'auto',
-            '--task', 'transcribe'
-        ];
-        
-        console.log(`🔄 Executing: whisper ${whisperArgs.join(' ')}`);
-        
-        const whisperProcess = spawn('whisper', whisperArgs);
-        
-        let stdout = '';
-        let stderr = '';
-        
-        whisperProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-            // Show progress
-            const progressMatch = data.toString().match(/(\d+)%/);
-            if (progressMatch) {
-                process.stdout.write(`\r🎤 Transcribing: ${progressMatch[1]}%`);
-            }
-        });
-        
-        whisperProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-            // Whisper outputs progress to stderr
-            const progressMatch = data.toString().match(/(\d+)%/);
-            if (progressMatch) {
-                process.stdout.write(`\r🎤 Transcribing: ${progressMatch[1]}%`);
-            }
-        });
-        
-        whisperProcess.on('close', (code) => {
-            console.log(`\n🎤 Whisper transcription completed (exit code: ${code})`);
-            
-            if (code !== 0) {
-                console.error(`❌ Whisper failed with exit code ${code}`);
-                console.error(`Stderr: ${stderr}`);
-                reject(new Error(`Whisper failed with exit code ${code}`));
-                return;
-            }
-            
-            try {
-                // Read the JSON output file
-                if (fs.existsSync(jsonOutputPath)) {
-                    const jsonContent = fs.readFileSync(jsonOutputPath, 'utf8');
-                    const transcription = JSON.parse(jsonContent);
-                    
-                    console.log(`✅ Transcription loaded from: ${jsonOutputPath}`);
-                    
-                    // Clean up JSON file
-                    fs.unlinkSync(jsonOutputPath);
-                    console.log(`🗑️  Cleaned up JSON file: ${jsonOutputPath}`);
-                    
-                    // Convert Whisper format to OpenAI-compatible format
-                    const convertedTranscription = {
-                        text: transcription.text,
-                        segments: transcription.segments || []
-                    };
-                    
-                    resolve(convertedTranscription);
-                } else {
-                    console.error(`❌ JSON output file not found: ${jsonOutputPath}`);
-                    reject(new Error('Whisper JSON output file not found'));
-                }
-            } catch (error) {
-                console.error(`❌ Error reading transcription JSON:`, error.message);
-                reject(error);
-            }
-        });
-        
-        whisperProcess.on('error', (error) => {
-            console.error(`❌ Failed to start whisper process:`, error.message);
-            reject(error);
-        });
-    });
-}
-
-/**
  * Generates VTT content from transcription and audio analysis
  */
 function generateVttContent(transcription, audioAnalysis, videoInfo) {
-    console.log(`📝 Generating VTT content...`);
+    console.log(`📝 Generating VTT content (detected language: ${transcription.language})...`);
     
     let vttContent = 'WEBVTT\n';
     
@@ -310,7 +344,8 @@ function generateVttContent(transcription, audioAnalysis, videoInfo) {
         vttContent += `NOTE Video ID: ${videoInfo.videoId}\n`;
         vttContent += `NOTE Title: ${videoInfo.title}\n`;
     }
-    vttContent += `NOTE Generated by API.video Downloader & VTT Generator\n`;
+    vttContent += `NOTE Language: ${transcription.language}\n`;
+    vttContent += `NOTE Generated by API.video VTT Generator\n`;
     vttContent += `NOTE Music Detection: ${config.musicDetectionEnabled ? 'Enabled' : 'Disabled'}\n`;
     vttContent += `NOTE Silence Threshold: ${config.silenceThreshold}\n\n`;
     
@@ -367,7 +402,7 @@ async function generateVttForVideo(videoPath) {
     const videoFilename = path.basename(videoPath);
     const videoInfo = parseVideoFilename(videoFilename);
     
-    // Create VTT filename with video ID if available
+    // Create VTT filename (original language)
     let vttFilename;
     if (videoInfo.hasVideoId) {
         vttFilename = `[${videoInfo.videoId}]_${videoInfo.title}.vtt`;
@@ -396,13 +431,13 @@ async function generateVttForVideo(videoPath) {
         // Step 2: Analyze audio for silence and music
         const audioAnalysis = await analyzeAudio(audioPath);
         
-        // Step 3: Transcribe audio (prioritize local Whisper, fallback to OpenAI)
+        // Step 3: Transcribe audio
         let transcription;
         const whisperInstalled = await checkWhisperInstalled();
         
         if (whisperInstalled) {
             console.log(`🎤 Using local Whisper for transcription`);
-            transcription = await transcribeWithLocalWhisper(audioPath);
+            transcription = await transcribeWithLocalWhisper(audioPath, config.forceLanguage);
         } else if (openai) {
             console.log(`🎤 Local Whisper not found, using OpenAI API`);
             transcription = await transcribeWithOpenAI(audioPath);
@@ -414,18 +449,19 @@ async function generateVttForVideo(videoPath) {
                     start: 0,
                     end: 10,
                     text: "[No transcription available - install Whisper or set OpenAI API key]"
-                }]
+                }],
+                language: 'unknown'
             };
         }
         
-        // Step 4: Generate VTT content with video info
+        // Step 4: Generate VTT content
         const vttContent = generateVttContent(transcription, audioAnalysis, videoInfo);
         
         // Step 5: Save VTT file
         fs.writeFileSync(vttPath, vttContent, 'utf8');
-        console.log(`✅ VTT generated: ${vttFilename}`);
+        console.log(`✅ VTT generated: ${vttFilename} (language: ${transcription.language})`);
         if (videoInfo.hasVideoId) {
-            console.log(`💡 Ready for caption upload to video ID: ${videoInfo.videoId}`);
+            console.log(`💡 Ready for translation or direct caption upload`);
         }
         
         // Step 6: Cleanup temporary audio file
@@ -473,17 +509,6 @@ async function generateVttForAllVideos() {
     console.log(`🎬 Found ${videoFiles.length} video files to process`);
     console.log(`📂 VTT files will be saved to: ${config.vttOutputFolder}`);
     
-    // Check if videos have video IDs
-    const filesWithVideoId = videoFiles.filter(file => extractVideoIdFromFilename(path.basename(file)));
-    const filesWithoutVideoId = videoFiles.filter(file => !extractVideoIdFromFilename(path.basename(file)));
-    
-    if (filesWithVideoId.length > 0) {
-        console.log(`🆔 ${filesWithVideoId.length} files have video IDs (ready for caption upload)`);
-    }
-    if (filesWithoutVideoId.length > 0) {
-        console.log(`⚠️  ${filesWithoutVideoId.length} files missing video IDs (please re-download for caption upload capability)`);
-    }
-    
     let successCount = 0;
     let failureCount = 0;
     
@@ -508,7 +533,7 @@ async function generateVttForAllVideos() {
     console.log(`✅ Successful: ${successCount}`);
     console.log(`❌ Failed: ${failureCount}`);
     console.log(`📁 VTT files location: ${config.vttOutputFolder}`);
-    console.log(`\n💡 Files with [videoId] prefix are ready for caption reuploading!`);
+    console.log(`\n💡 Next step: Use vttTranslator.js to create multi-language versions!`);
 }
 
 /**
@@ -522,6 +547,7 @@ async function main() {
         console.log(`🤖 Whisper model: ${config.whisperModel}`);
         console.log(`🔇 Silence threshold: ${config.silenceThreshold}`);
         console.log(`🎵 Music detection: ${config.musicDetectionEnabled ? 'Enabled' : 'Disabled'}`);
+        console.log(`🌐 Language mode: ${config.forceLanguage ? `Forced to ${config.forceLanguage}` : 'Auto-detect'}`);
         
         // Check available transcription methods
         const whisperInstalled = await checkWhisperInstalled();
