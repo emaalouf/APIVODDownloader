@@ -74,7 +74,15 @@ function sanitizeFilename(filename) {
 }
 
 /**
- * Downloads a single video file
+ * Extracts video ID from filename (for files already downloaded with video ID)
+ */
+function extractVideoIdFromFilename(filename) {
+    const match = filename.match(/^\[([^\]]+)\]_/);
+    return match ? match[1] : null;
+}
+
+/**
+ * Downloads a single video file with video ID in filename
  */
 async function downloadVideo(video, outputDir, index, total) {
     const { videoId, title, assets } = video;
@@ -84,19 +92,30 @@ async function downloadVideo(video, outputDir, index, total) {
         return false;
     }
     
+    // Create filename with video ID: [videoId]_title.mp4
     const sanitizedTitle = sanitizeFilename(title || `video_${videoId}`);
-    const filename = `${sanitizedTitle}.mp4`;
+    const filename = `[${videoId}]_${sanitizedTitle}.mp4`;
     const filepath = path.join(outputDir, filename);
     
-    // Check if file already exists
+    // Check if file already exists (with video ID format)
     if (fs.existsSync(filepath)) {
         console.log(`⏭️  Skipping ${index}/${total}: ${title} (already exists)`);
+        return true;
+    }
+    
+    // Also check for old format files (without video ID) and rename them
+    const oldFilename = `${sanitizedTitle}.mp4`;
+    const oldFilepath = path.join(outputDir, oldFilename);
+    if (fs.existsSync(oldFilepath)) {
+        console.log(`🔄 Renaming existing file to include video ID: ${oldFilename} -> ${filename}`);
+        fs.renameSync(oldFilepath, filepath);
         return true;
     }
     
     try {
         console.log(`⬇️  Downloading ${index}/${total}: ${title}`);
         console.log(`    Video ID: ${videoId}`);
+        console.log(`    Filename: ${filename}`);
         console.log(`    URL: ${assets.mp4}`);
         
         const response = await axios({
@@ -163,6 +182,7 @@ async function downloadAllVideos(videos) {
     console.log(`✅ Successful downloads: ${successCount}`);
     console.log(`❌ Failed downloads: ${failureCount}`);
     console.log(`📁 Output directory: ${outputDir}`);
+    console.log(`\n💡 Note: Files are named as [videoId]_title.mp4 for easy caption reuploading`);
 }
 
 /**
@@ -200,4 +220,4 @@ if (require.main === module) {
     main();
 }
 
-module.exports = { getAllVideos, downloadAllVideos, downloadVideo, main }; 
+module.exports = { getAllVideos, downloadAllVideos, downloadVideo, main, extractVideoIdFromFilename }; 
