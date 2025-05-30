@@ -4,6 +4,9 @@
 # Downloaded videos
 downloads/
 
+# Generated subtitles
+subtitles/
+
 # Node modules
 node_modules/
 
