@@ -1,383 +1,204 @@
 require('dotenv').config();
+const { makeAuthenticatedRequest } = require('./auth');
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
-const axios = require('axios');
 const FormData = require('form-data');
-const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
 
-// Configuration from environment variables
-const config = {
-    vttOutputFolder: process.env.VTT_OUTPUT_FOLDER || './subtitles',
-    defaultLanguage: process.env.CAPTION_LANGUAGE || 'en',
-    apiBaseUrl: 'https://ws.api.video'
-};
+const API_BASE_URL = 'https://ws.api.video';
+const REQUIRED_LANGUAGES = ['ar', 'en', 'fr', 'es', 'it'];
+// IMPORTANT: Create this directory and place your VTT files inside it.
+const CAPTIONS_DIR = path.resolve(process.env.CAPTIONS_DIR || './caption_files');
+
+// This list should be populated with the actual filenames of your VTT files
+// The script will try to parse videoId and language from these names.
+// Alternatively, it can scan the CAPTIONS_DIR if vttFileNamesList is empty or not provided.
+const vttFileNamesList = [
+    // Add your VTT filenames here if you want to use a specific list
+    // e.g., '[vi4ynvmEuSeid9CQMODBJnVJ]_Anxiety_03.mp4_ar.vtt',
+    // If empty, the script will scan CAPTIONS_DIR.
+];
+
+const captionFileMap = {}; // Structure: { videoId: { lang: 'full_path_to_vtt' } }
 
 /**
- * Gets all captions for a specific video
+ * Parses VTT filenames to extract videoId and language code, building a map.
+ * Filenames are expected in a format like: [videoId]_someText_lang.vtt or [videoId]_someText.mp4_lang.vtt
+ */
+async function buildCaptionFileMap() {
+    console.log(`Scanning for VTT files in: ${CAPTIONS_DIR}`);
+    let filesToProcess = vttFileNamesList;
+
+    if (!filesToProcess || filesToProcess.length === 0) {
+        try {
+            filesToProcess = await fsp.readdir(CAPTIONS_DIR);
+        } catch (error) {
+            console.error(`Error reading captions directory ${CAPTIONS_DIR}: ${error.message}`);
+            console.error('Please ensure the CAPTIONS_DIR exists and is readable, or populate vttFileNamesList in the script.');
+            return;
+        }
+    }
+
+    const videoIdRegex = /\[(vi[a-zA-Z0-9]+)\]/; // Extracts videoId like 'vi...'
+    const langCodeRegex = /_([a-z]{2})\.vtt$/i;    // Extracts lang like _ar, _en, _it from _xyz_lang.vtt
+
+    for (const fileName of filesToProcess) {
+        const videoIdMatch = fileName.match(videoIdRegex);
+        const langMatch = fileName.match(langCodeRegex);
+
+        if (videoIdMatch && videoIdMatch[1] && langMatch && langMatch[1]) {
+            const videoId = videoIdMatch[1];
+            const lang = langMatch[1].toLowerCase();
+            if (!captionFileMap[videoId]) {
+                captionFileMap[videoId] = {};
+            }
+            captionFileMap[videoId][lang] = path.join(CAPTIONS_DIR, fileName);
+        } else {
+            // console.warn(`Could not parse videoId or lang from filename: ${fileName}. Skipping.`);
+        }
+    }
+    // console.log('Built caption file map:', JSON.stringify(captionFileMap, null, 2));
+}
+
+/**
+ * Lists all videos from api.video
+ */
+async function listVideos() {
+    try {
+        console.log('Fetching list of videos...');
+        const response = await makeAuthenticatedRequest({
+            url: `${API_BASE_URL}/videos`,
+            method: 'GET'
+        });
+        return response.data.data || []; // .data contains pagination, .data.data is the array of videos
+    } catch (error) {
+        console.error('Error fetching videos:', error.response?.data || error.message);
+        throw error;
+    }
+}
+
+/**
+ * Gets existing captions for a video
  */
 async function getVideoCaptions(videoId) {
     try {
-        console.log(`📋 Getting captions for video ${videoId}...`);
-        
+        // console.log(`Fetching captions for video ID: ${videoId}`);
         const response = await makeAuthenticatedRequest({
-            method: 'GET',
-            url: `${config.apiBaseUrl}/videos/${videoId}/captions`
+            url: `${API_BASE_URL}/videos/${videoId}/captions`,
+            method: 'GET'
         });
-        
-        if (response.status === 200) {
-            console.log(`✅ Retrieved ${response.data.data.length} captions for video ${videoId}`);
-            return { success: true, captions: response.data.data };
-        } else {
-            console.error(`❌ Failed to get captions for video ${videoId}: ${response.status}`);
-            return { success: false, error: `HTTP ${response.status}` };
-        }
-        
+        return response.data.data || []; // .data contains pagination, .data.data is the array of captions
     } catch (error) {
-        console.error(`❌ Error getting captions for video ${videoId}:`, error.response?.data || error.message);
-        return { success: false, error: error.message };
+        console.error(`Error fetching captions for video ${videoId}:`, error.response?.data || error.message);
+        return []; // Return empty array on error to allow processing other videos
     }
 }
 
 /**
- * Deletes a specific caption for a video
+ * Uploads a VTT caption file for a specific video and language
  */
-async function deleteCaption(videoId, language) {
-    try {
-        console.log(`🗑️  Deleting ${language} caption for video ${videoId}...`);
-        
-        const response = await makeAuthenticatedRequest({
-            method: 'DELETE',
-            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`
-        });
-        
-        if (response.status === 204) {
-            console.log(`✅ Successfully deleted ${language} caption for video ${videoId}`);
-            return { success: true };
-        } else {
-            console.error(`❌ Failed to delete ${language} caption for video ${videoId}: ${response.status}`);
-            return { success: false, error: `HTTP ${response.status}` };
-        }
-        
-    } catch (error) {
-        // 404 is expected if caption doesn't exist
-        if (error.response?.status === 404) {
-            console.log(`ℹ️  No ${language} caption found for video ${videoId} (already deleted or never existed)`);
-            return { success: true };
-        }
-        
-        console.error(`❌ Error deleting ${language} caption for video ${videoId}:`, error.response?.data || error.message);
-        return { success: false, error: error.message };
-    }
-}
-
-/**
- * Uploads a VTT caption file to API.video
- */
-async function uploadCaption(videoId, vttFilePath, language = 'en') {
-    const filename = path.basename(vttFilePath);
+async function uploadCaption(videoId, languageCode, vttFilePath) {
+    console.log(`Attempting to upload ${languageCode} caption for video ${videoId} from ${vttFilePath}`);
     
+    const form = new FormData();
+    form.append('file', fs.createReadStream(vttFilePath));
+
     try {
-        console.log(`📤 Uploading ${language} caption for video ${videoId}...`);
-        console.log(`    File: ${filename}`);
-        
-        // Check if VTT file exists
-        if (!fs.existsSync(vttFilePath)) {
-            throw new Error(`VTT file not found: ${vttFilePath}`);
-        }
-        
-        // Read the VTT file
-        const vttContent = fs.readFileSync(vttFilePath);
-        
-        // Create form data
-        const formData = new FormData();
-        formData.append('file', vttContent, {
-            filename: filename,
-            contentType: 'text/vtt'
-        });
-        
-        // Upload caption using authenticated request
-        const response = await makeAuthenticatedRequest({
+        await makeAuthenticatedRequest({
+            url: `${API_BASE_URL}/videos/${videoId}/captions/${languageCode}`,
             method: 'POST',
-            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`,
-            data: formData,
+            data: form,
             headers: {
-                ...formData.getHeaders()
+                ...form.getHeaders() // Important for multipart/form-data
             }
         });
-        
-        if (response.status === 200 || response.status === 201) {
-            console.log(`✅ Successfully uploaded ${language} caption for video ${videoId}`);
-            return { success: true, videoId, filename };
-        } else {
-            console.error(`❌ Failed to upload ${language} caption for video ${videoId}: ${response.status}`);
-            return { success: false, videoId, filename, error: `HTTP ${response.status}` };
-        }
-        
+        console.log(`Successfully uploaded ${languageCode} caption for video ${videoId}`);
     } catch (error) {
-        console.error(`❌ Error uploading ${language} caption for video ${videoId}:`, error.response?.data || error.message);
-        return { success: false, videoId, filename, error: error.message };
+        let errorMessage = error.message;
+        if (error.response) {
+            errorMessage = `Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`;
+        }
+        console.error(`Error uploading ${languageCode} caption for video ${videoId}:`, errorMessage);
+        // If it's a 409 (Conflict, caption already exists), we can consider it a success for our logic.
+        if (error.response?.status === 409) {
+            console.warn(`Caption for ${languageCode} on video ${videoId} might already exist (409 Conflict).`);
+        }
     }
 }
 
 /**
- * Manages captions for a single video: get, delete, and re-upload
+ * Main function to process videos and manage captions
  */
-async function manageVideoCaption(videoId, vttFilePath, language = 'en') {
-    console.log(`\n🎬 Managing ${language} caption for video ${videoId}`);
-    console.log(`📁 VTT file: ${vttFilePath}`);
-    
+async function processVideos() {
     try {
-        // Step 1: Get existing captions
-        const captionsResult = await getVideoCaptions(videoId);
-        if (!captionsResult.success) {
-            return { success: false, step: 'get_captions', error: captionsResult.error };
+        await buildCaptionFileMap();
+        if (Object.keys(captionFileMap).length === 0 && vttFileNamesList.length === 0) {
+            console.warn("Caption file map is empty and no specific VTT files listed. Ensure VTT files are in CAPTIONS_DIR and filenames are parsable, or populate 'vttFileNamesList'.");
         }
         
-        // Check if the target language caption exists
-        const existingCaption = captionsResult.captions.find(caption => caption.srclang === language);
-        
-        // Step 2: Delete existing caption if it exists
-        if (existingCaption) {
-            console.log(`🔍 Found existing ${language} caption, deleting...`);
-            const deleteResult = await deleteCaption(videoId, language);
-            if (!deleteResult.success) {
-                return { success: false, step: 'delete_caption', error: deleteResult.error };
-            }
-        } else {
-            console.log(`ℹ️  No existing ${language} caption found`);
-        }
-        
-        // Step 3: Upload new VTT file
-        const uploadResult = await uploadCaption(videoId, vttFilePath, language);
-        if (!uploadResult.success) {
-            return { success: false, step: 'upload_caption', error: uploadResult.error };
-        }
-        
-        console.log(`🎉 Successfully managed ${language} caption for video ${videoId}!`);
-        return { success: true, videoId, language };
-        
-    } catch (error) {
-        console.error(`❌ Error managing caption for video ${videoId}:`, error.message);
-        return { success: false, error: error.message };
-    }
-}
-
-/**
- * Parses video ID from VTT filename
- * Expected format: [videoId]_Exe_4.mp4.vtt or [videoId]_Title_en.vtt
- */
-function parseVideoIdFromVttFilename(filename) {
-    // Remove .vtt extension
-    const nameWithoutVtt = filename.replace(/\.vtt$/, '');
-    
-    // Look for pattern [videoId] at the beginning
-    const match = nameWithoutVtt.match(/^\[([^\]]+)\]/);
-    
-    if (match) {
-        return {
-            hasVideoId: true,
-            videoId: match[1],
-            originalFilename: filename
-        };
-    }
-    
-    return {
-        hasVideoId: false,
-        originalFilename: filename
-    };
-}
-
-/**
- * Processes all VTT files in the configured folder
- */
-async function processAllVttFiles(language = null) {
-    try {
-        // Ensure we have valid authentication (this will handle token refresh automatically)
-        console.log('🔑 Ensuring valid authentication...');
-        await getAccessToken();
-        
-        // Find all VTT files
-        if (!fs.existsSync(config.vttOutputFolder)) {
-            console.error(`❌ VTT output folder not found: ${config.vttOutputFolder}`);
+        const videos = await listVideos();
+        if (!videos || videos.length === 0) {
+            console.log("No videos found in your account.");
             return;
         }
-        
-        const vttFiles = fs.readdirSync(config.vttOutputFolder)
-            .filter(file => file.toLowerCase().endsWith('.vtt'))
-            .map(file => ({
-                filename: file,
-                fullPath: path.join(config.vttOutputFolder, file)
-            }));
-        
-        if (vttFiles.length === 0) {
-            console.log(`📭 No VTT files found in ${config.vttOutputFolder}`);
-            return;
-        }
-        
-        // Parse video IDs from filenames
-        const filesWithVideoId = [];
-        const filesWithoutVideoId = [];
-        
-        vttFiles.forEach(({ filename, fullPath }) => {
-            const parseResult = parseVideoIdFromVttFilename(filename);
-            
-            if (parseResult.hasVideoId) {
-                filesWithVideoId.push({
-                    filename,
-                    fullPath,
-                    videoId: parseResult.videoId
-                });
-            } else {
-                filesWithoutVideoId.push({ filename, fullPath });
-            }
-        });
-        
-        console.log(`\n📊 Caption Management Overview:`);
-        console.log(`🎬 Total VTT files: ${vttFiles.length}`);
-        console.log(`🆔 Files with video IDs: ${filesWithVideoId.length}`);
-        console.log(`⚠️  Files without video IDs: ${filesWithoutVideoId.length}`);
-        console.log(`🌍 Target language: ${language || config.defaultLanguage}`);
-        
-        if (filesWithoutVideoId.length > 0) {
-            console.log(`\n⚠️  The following files cannot be processed (missing video IDs):`);
-            filesWithoutVideoId.forEach(file => {
-                console.log(`   - ${file.filename}`);
-            });
-            console.log(`💡 Expected format: [videoId]_Title.vtt`);
-        }
-        
-        if (filesWithVideoId.length === 0) {
-            console.log(`❌ No files with video IDs found. Cannot process captions.`);
-            return;
-        }
-        
-        console.log(`\n🚀 Starting caption management for ${filesWithVideoId.length} files...`);
-        
-        let successCount = 0;
-        let failureCount = 0;
-        const results = [];
-        const targetLanguage = language || config.defaultLanguage;
-        
-        for (let i = 0; i < filesWithVideoId.length; i++) {
-            const { filename, fullPath, videoId } = filesWithVideoId[i];
-            
-            console.log(`\n📹 Processing ${i + 1}/${filesWithVideoId.length}: ${filename}`);
-            
-            const result = await manageVideoCaption(videoId, fullPath, targetLanguage);
-            results.push({ ...result, filename, videoId });
-            
-            if (result.success) {
-                successCount++;
-            } else {
-                failureCount++;
-            }
-            
-            // Add delay between operations to be respectful to the API
-            if (i < filesWithVideoId.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
+
+        console.log(`Found ${videos.length} videos. Processing...`);
+
+        for (const video of videos) {
+            const videoId = video.videoId;
+            const videoTitle = video.title || 'N/A';
+            console.log(`\nProcessing video: "${videoTitle}" (ID: ${videoId})`);
+
+            const existingCaptions = await getVideoCaptions(videoId);
+            const existingLangs = existingCaptions.map(c => c.language.toLowerCase());
+            console.log(`Existing captions: ${existingLangs.length > 0 ? existingLangs.join(', ') : 'None'}`);
+
+            for (const lang of REQUIRED_LANGUAGES) {
+                if (!existingLangs.includes(lang)) {
+                    console.log(`Missing caption for language: ${lang}`);
+                    
+                    const vttFilePath = captionFileMap[videoId]?.[lang];
+
+                    if (vttFilePath) {
+                        try {
+                            await fsp.access(vttFilePath); // Check if file exists and is accessible
+                            console.log(`Found local VTT file: ${vttFilePath}`);
+                            await uploadCaption(videoId, lang, vttFilePath);
+                        } catch (fileError) {
+                            console.warn(`VTT file for ${videoId} language ${lang} at ${vttFilePath} not found or not accessible.`);
+                        }
+                    } else {
+                        console.warn(`No VTT file mapped for video ${videoId}, language ${lang}.`);
+                    }
+                } else {
+                    console.log(`Caption for ${lang} already exists.`);
+                }
             }
         }
-        
-        // Summary
-        console.log(`\n📊 Caption Management Summary:`);
-        console.log(`✅ Successful operations: ${successCount}`);
-        console.log(`❌ Failed operations: ${failureCount}`);
-        
-        if (failureCount > 0) {
-            console.log(`\n❌ Failed operations:`);
-            results.filter(r => !r.success).forEach(result => {
-                console.log(`   - ${result.filename} (${result.videoId}): ${result.error} (Step: ${result.step || 'unknown'})`);
-            });
-        }
-        
-        if (successCount > 0) {
-            console.log(`\n🎉 Successfully managed captions for ${successCount} videos!`);
-            console.log(`💡 All captions have been updated on API.video`);
-        }
-        
+        console.log("\nCaption processing complete.");
     } catch (error) {
-        console.error('❌ Error in caption management process:', error.message);
-        process.exit(1);
+        console.error("\nAn error occurred during the main processing:", error.message);
     }
 }
 
-/**
- * Processes a single VTT file by video ID
- */
-async function processSingleVideo(videoId, vttFilePath, language = null) {
+// Run the process
+(async () => {
     try {
-        // Ensure we have valid authentication (this will handle token refresh automatically)
-        console.log('🔑 Ensuring valid authentication...');
-        await getAccessToken();
-        
-        const targetLanguage = language || config.defaultLanguage;
-        
-        // Process the video
-        const result = await manageVideoCaption(videoId, vttFilePath, targetLanguage);
-        
-        if (result.success) {
-            console.log(`🎉 Caption management completed successfully for video ${videoId}!`);
-            return true;
-        } else {
-            console.error(`❌ Caption management failed for video ${videoId}: ${result.error} (Step: ${result.step || 'unknown'})`);
-            return false;
+        // Validate CAPTIONS_DIR existence
+        if (!fs.existsSync(CAPTIONS_DIR)) {
+            console.warn(`CAPTIONS_DIR "${CAPTIONS_DIR}" does not exist. Creating it now.`);
+            try {
+                await fsp.mkdir(CAPTIONS_DIR, { recursive: true });
+                console.log(`Successfully created CAPTIONS_DIR: ${CAPTIONS_DIR}`);
+                console.log(`Please place your VTT caption files in this directory: ${CAPTIONS_DIR}`);
+            } catch (mkdirError) {
+                console.error(`Failed to create CAPTIONS_DIR "${CAPTIONS_DIR}": ${mkdirError.message}`);
+                console.error("Please create this directory manually and place your VTT files inside.");
+                return; // Stop if directory can't be created/accessed
+            }
         }
-        
-    } catch (error) {
-        console.error('❌ Error processing single video:', error.message);
-        return false;
+        await processVideos();
+    } catch (e) {
+        console.error("Unhandled error in script execution:", e);
     }
-}
-
-// Execute if this file is run directly
-async function main() {
-    const args = process.argv.slice(2);
-    
-    if (args.length === 0) {
-        // Process all VTT files
-        console.log('🚀 Processing all VTT files in the subtitles folder...');
-        await processAllVttFiles();
-    } else if (args.length >= 2) {
-        // Process specific video
-        const videoId = args[0];
-        const vttFilePath = args[1];
-        const language = args[2] || config.defaultLanguage;
-        
-        console.log(`🚀 Processing single video: ${videoId}`);
-        console.log(`📁 VTT file: ${vttFilePath}`);
-        console.log(`🌍 Language: ${language}`);
-        
-        await processSingleVideo(videoId, vttFilePath, language);
-    } else {
-        console.log(`
-📖 Usage:
-   
-   Process all VTT files:
-   node captionManager.js
-   
-   Process specific video:
-   node captionManager.js <videoId> <vttFilePath> [language]
-   
-   Examples:
-   node captionManager.js
-   node captionManager.js vi2Y2FFzw8IVMZ8hXyKTBmcJ ./subtitles/[vi2Y2FFzw8IVMZ8hXyKTBmcJ]_Exe_4.mp4.vtt en
-        `);
-    }
-}
-
-if (require.main === module) {
-    main().catch(error => {
-        console.error('❌ Fatal error:', error.message);
-        process.exit(1);
-    });
-}
-
-module.exports = {
-    getVideoCaptions,
-    deleteCaption,
-    uploadCaption,
-    manageVideoCaption,
-    processAllVttFiles,
-    processSingleVideo,
-    parseVideoIdFromVttFilename
-}; 
+})(); 
