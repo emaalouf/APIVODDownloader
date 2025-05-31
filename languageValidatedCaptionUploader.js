@@ -11,8 +11,12 @@ const config = {
     apiBaseUrl: 'https://ws.api.video',
     openRouterApiKey: process.env.OPENROUTER_API_KEY,
     openRouterApiUrl: 'https://openrouter.ai/api/v1/chat/completions',
-    delayBetweenFiles: process.env.DELAY_BETWEEN_FILES || 1000,
-    maxRetries: 3
+    delayBetweenFiles: process.env.DELAY_BETWEEN_FILES || 2000,  // Increased delay
+    openRouterDelay: process.env.OPENROUTER_DELAY || 3000,  // Delay for AI requests
+    maxRetries: 3,
+    deleteExistingCaptions: process.env.DELETE_EXISTING_CAPTIONS === 'true' || false,
+    dryRun: process.env.DRY_RUN === 'true' || false,
+    skipExisting: process.env.SKIP_EXISTING === 'true' || true  // Skip videos that already have captions
 };
 
 // Language code mappings
@@ -103,7 +107,7 @@ function extractFirstWords(vttContent, wordCount = 5) {
 /**
  * Detects language using OpenRouter AI
  */
-async function detectLanguageWithAI(text) {
+async function detectLanguageWithAI(text, retryCount = 0) {
     try {
         if (!config.openRouterApiKey) {
             throw new Error('OPENROUTER_API_KEY not found in environment variables');
@@ -111,6 +115,13 @@ async function detectLanguageWithAI(text) {
         
         if (!text || text.trim().length === 0) {
             throw new Error('No text provided for language detection');
+        }
+        
+        // Add delay before AI request to avoid rate limits
+        if (retryCount > 0) {
+            const delay = config.openRouterDelay * Math.pow(2, retryCount); // Exponential backoff
+            console.log(`⏳ Rate limit hit, waiting ${delay}ms before retry ${retryCount}...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
         
         const response = await axios.post(config.openRouterApiUrl, {
@@ -142,6 +153,12 @@ async function detectLanguageWithAI(text) {
         return detectedLanguage;
         
     } catch (error) {
+        // Handle rate limiting with retries
+        if (error.response?.status === 429 && retryCount < config.maxRetries) {
+            console.log(`⚠️  Rate limit hit (attempt ${retryCount + 1}/${config.maxRetries})`);
+            return await detectLanguageWithAI(text, retryCount + 1);
+        }
+        
         console.error(`❌ Error detecting language with AI:`, error.response?.data || error.message);
         throw error;
     }
@@ -264,6 +281,64 @@ async function validateAndUploadCaption(filePath) {
             console.log(`ℹ️  No language suffix in filename, using AI-detected: ${detectedLangCode}`);
         }
         
+        // Check for existing captions if skipExisting is enabled
+        if (config.skipExisting || config.deleteExistingCaptions) {
+            console.log(`🔍 Checking for existing captions...`);
+            const captionsResult = await getVideoCaptions(videoId);
+            
+            if (captionsResult.success) {
+                const existingCaption = captionsResult.captions.find(caption => caption.srclang === languageToUse);
+                
+                if (existingCaption) {
+                    if (config.skipExisting && !config.deleteExistingCaptions) {
+                        console.log(`⏭️  Skipping ${filename}: ${languageToUse} caption already exists`);
+                        return {
+                            success: true,
+                            skipped: true,
+                            filename,
+                            videoId,
+                            filenameLang,
+                            detectedLang: detectedLangCode,
+                            detectedLanguageName,
+                            languageUsed: languageToUse,
+                            languageMismatch,
+                            firstWords,
+                            reason: 'Caption already exists'
+                        };
+                    } else if (config.deleteExistingCaptions) {
+                        const deleteResult = await deleteCaption(videoId, languageToUse);
+                        if (!deleteResult.success) {
+                            return {
+                                success: false,
+                                filename,
+                                videoId,
+                                error: `Failed to delete existing caption: ${deleteResult.error}`
+                            };
+                        }
+                    }
+                } else {
+                    console.log(`ℹ️  No existing ${languageToUse} caption found`);
+                }
+            }
+        }
+
+        // Dry run mode - don't actually upload
+        if (config.dryRun) {
+            console.log(`🧪 DRY RUN: Would upload ${languageToUse} caption for video ${videoId}`);
+            return {
+                success: true,
+                dryRun: true,
+                filename,
+                videoId,
+                filenameLang,
+                detectedLang: detectedLangCode,
+                detectedLanguageName,
+                languageUsed: languageToUse,
+                languageMismatch,
+                firstWords
+            };
+        }
+
         // Upload caption with detected language
         const uploadResult = await uploadCaption(videoId, filePath, languageToUse);
         
@@ -375,11 +450,18 @@ async function processAllVttFilesWithValidation() {
         console.log(`\n📊 Found ${vttFiles.length} VTT files to process`);
         console.log(`🤖 Using OpenRouter AI for language detection`);
         console.log(`⏱️  Delay between files: ${config.delayBetweenFiles}ms`);
+        console.log(`⏱️  Delay for AI requests: ${config.openRouterDelay}ms`);
+        console.log(`🔄 Max retries: ${config.maxRetries}`);
+        console.log(`⏭️  Skip existing captions: ${config.skipExisting}`);
+        console.log(`🗑️  Delete existing captions: ${config.deleteExistingCaptions}`);
+        console.log(`🧪 Dry run mode: ${config.dryRun}`);
         
         const results = [];
         let successCount = 0;
         let failureCount = 0;
         let mismatchCount = 0;
+        let skippedCount = 0;
+        let dryRunCount = 0;
         
         for (let i = 0; i < vttFiles.length; i++) {
             const filePath = vttFiles[i];
@@ -390,7 +472,14 @@ async function processAllVttFilesWithValidation() {
             results.push(result);
             
             if (result.success) {
-                successCount++;
+                if (result.skipped) {
+                    skippedCount++;
+                } else if (result.dryRun) {
+                    dryRunCount++;
+                } else {
+                    successCount++;
+                }
+                
                 if (result.languageMismatch) {
                     mismatchCount++;
                 }
@@ -408,6 +497,8 @@ async function processAllVttFilesWithValidation() {
         // Generate summary report
         console.log(`\n📊 Language-Validated Caption Upload Summary:`);
         console.log(`✅ Successful uploads: ${successCount}`);
+        console.log(`⏭️  Skipped (already exist): ${skippedCount}`);
+        if (dryRunCount > 0) console.log(`🧪 Dry run simulations: ${dryRunCount}`);
         console.log(`❌ Failed uploads: ${failureCount}`);
         console.log(`⚠️  Language mismatches detected: ${mismatchCount}`);
         
@@ -415,6 +506,13 @@ async function processAllVttFilesWithValidation() {
             console.log(`\n⚠️  Files with language mismatches:`);
             results.filter(r => r.languageMismatch).forEach(result => {
                 console.log(`   - ${result.filename}: filename(${result.filenameLang}) vs detected(${result.detectedLang})`);
+            });
+        }
+        
+        if (skippedCount > 0) {
+            console.log(`\n⏭️  Skipped files (captions already exist):`);
+            results.filter(r => r.skipped).forEach(result => {
+                console.log(`   - ${result.filename} (${result.languageUsed})`);
             });
         }
         
@@ -433,6 +531,57 @@ async function processAllVttFilesWithValidation() {
     }
 }
 
+/**
+ * Gets all captions for a specific video
+ */
+async function getVideoCaptions(videoId) {
+    try {
+        const response = await makeAuthenticatedRequest({
+            method: 'GET',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions`
+        });
+        
+        if (response.status === 200) {
+            return { success: true, captions: response.data.data };
+        } else {
+            return { success: false, error: `HTTP ${response.status}` };
+        }
+        
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Deletes a specific caption for a video
+ */
+async function deleteCaption(videoId, language) {
+    try {
+        console.log(`🗑️  Deleting existing ${language} caption for video ${videoId}...`);
+        
+        const response = await makeAuthenticatedRequest({
+            method: 'DELETE',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`
+        });
+        
+        if (response.status === 204) {
+            console.log(`✅ Successfully deleted ${language} caption for video ${videoId}`);
+            return { success: true };
+        } else {
+            return { success: false, error: `HTTP ${response.status}` };
+        }
+        
+    } catch (error) {
+        // 404 is expected if caption doesn't exist
+        if (error.response?.status === 404) {
+            console.log(`ℹ️  No ${language} caption found for video ${videoId} (already deleted or never existed)`);
+            return { success: true };
+        }
+        
+        return { success: false, error: error.message };
+    }
+}
+
 // Execute if this file is run directly
 if (require.main === module) {
     processAllVttFilesWithValidation().catch(error => {
@@ -446,5 +595,7 @@ module.exports = {
     processAllVttFilesWithValidation,
     detectLanguageWithAI,
     extractFirstWords,
-    parseVttFilename
+    parseVttFilename,
+    getVideoCaptions,
+    deleteCaption
 };
