@@ -1,0 +1,31 @@
+{
+  "summary": {
+    "processedAt": "2025-05-31T18:38:11.840Z",
+    "action": "universal_caption_upload",
+    "videosProcessed": 1,
+    "totalFiles": 1,
+    "successful": 0,
+    "skipped": 1,
+    "errors": 0,
+    "successRate": 100,
+    "skipExisting": true
+  },
+  "results": [
+    {
+      "videoId": "vi057I5LKytkjaEW5eqOiJo",
+      "language": "en",
+      "filename": "[vi057I5LKytkjaEW5eqOiJo]_Emotional_Mastery-3_en.vtt",
+      "result": {
+        "success": true,
+        "action": "skipped_existing"
+      },
+      "processedAt": "2025-05-31T18:38:11.840Z"
+    }
+  ],
+  "invalidFiles": [
+    {
+      "filename": "Emotional_Mastery-1.mp4.vtt",
+      "reason": "No video ID"
+    }
+  ]
+}
