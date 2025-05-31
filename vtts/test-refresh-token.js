@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { getAccessToken, makeAuthenticatedRequest, clearTokenCache, isTokenExpired } = require('./auth.js');
+const { getAccessToken, makeAuthenticatedRequest, clearTokenCache, isTokenExpired } = require('../auth.js');
 
 /**
  * Test script to demonstrate refresh token functionality

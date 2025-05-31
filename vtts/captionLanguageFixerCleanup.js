@@ -1,6 +1,6 @@
 require('dotenv').config();
 const fs = require('fs');
-const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
+const { getAccessToken, makeAuthenticatedRequest } = require('../auth.js');
 
 // Configuration
 const config = {

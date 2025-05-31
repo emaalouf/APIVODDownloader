@@ -2,7 +2,7 @@ require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { getAccessToken, getOutputFolder } = require('./auth.js');
+const { getAccessToken, getOutputFolder } = require('../auth.js');
 
 /**
  * Fetches all videos from API.video with pagination support

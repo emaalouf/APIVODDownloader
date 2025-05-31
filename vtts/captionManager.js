@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { makeAuthenticatedRequest } = require('./auth');
+const { makeAuthenticatedRequest } = require('../auth');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
