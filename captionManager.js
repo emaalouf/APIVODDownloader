@@ -150,7 +150,9 @@ async function processVideos() {
             console.log(`\nProcessing video: "${videoTitle}" (ID: ${videoId})`);
 
             const existingCaptions = await getVideoCaptions(videoId);
-            const existingLangs = existingCaptions.map(c => c.language.toLowerCase());
+            const existingLangs = existingCaptions
+                .map(c => c.srclang ? c.srclang.toLowerCase() : null)
+                .filter(lang => lang !== null);
             console.log(`Existing captions: ${existingLangs.length > 0 ? existingLangs.join(', ') : 'None'}`);
 
             for (const lang of REQUIRED_LANGUAGES) {
