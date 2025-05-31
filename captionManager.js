@@ -7,8 +7,8 @@ const FormData = require('form-data');
 
 const API_BASE_URL = 'https://ws.api.video';
 const REQUIRED_LANGUAGES = ['ar', 'en', 'fr', 'es', 'it'];
-// IMPORTANT: Create this directory and place your VTT files inside it.
-const CAPTIONS_DIR = path.resolve(process.env.CAPTIONS_DIR || './caption_files');
+// IMPORTANT: This directory should contain your VTT subtitle files.
+const CAPTIONS_DIR = path.resolve(process.env.CAPTIONS_DIR || './subtitles');
 
 // This list should be populated with the actual filenames of your VTT files
 // The script will try to parse videoId and language from these names.
@@ -26,12 +26,13 @@ const captionFileMap = {}; // Structure: { videoId: { lang: 'full_path_to_vtt' }
  * Filenames are expected in a format like: [videoId]_someText_lang.vtt or [videoId]_someText.mp4_lang.vtt
  */
 async function buildCaptionFileMap() {
-    console.log(`Scanning for VTT files in: ${CAPTIONS_DIR}`);
+    console.log(`\nScanning for VTT files in: ${CAPTIONS_DIR}`);
     let filesToProcess = vttFileNamesList;
 
     if (!filesToProcess || filesToProcess.length === 0) {
         try {
             filesToProcess = await fsp.readdir(CAPTIONS_DIR);
+            console.log(`Found ${filesToProcess.length} files in directory`);
         } catch (error) {
             console.error(`Error reading captions directory ${CAPTIONS_DIR}: ${error.message}`);
             console.error('Please ensure the CAPTIONS_DIR exists and is readable, or populate vttFileNamesList in the script.');
@@ -42,7 +43,15 @@ async function buildCaptionFileMap() {
     const videoIdRegex = /\[(vi[a-zA-Z0-9]+)\]/; // Extracts videoId like 'vi...'
     const langCodeRegex = /_([a-z]{2})\.vtt$/i;    // Extracts lang like _ar, _en, _it from _xyz_lang.vtt
 
+    let processedCount = 0;
+    let skippedCount = 0;
+
     for (const fileName of filesToProcess) {
+        // Skip non-VTT files
+        if (!fileName.endsWith('.vtt')) {
+            continue;
+        }
+
         const videoIdMatch = fileName.match(videoIdRegex);
         const langMatch = fileName.match(langCodeRegex);
 
@@ -53,11 +62,26 @@ async function buildCaptionFileMap() {
                 captionFileMap[videoId] = {};
             }
             captionFileMap[videoId][lang] = path.join(CAPTIONS_DIR, fileName);
+            console.log(`  ✓ Mapped: ${fileName} -> Video: ${videoId}, Language: ${lang}`);
+            processedCount++;
         } else {
-            // console.warn(`Could not parse videoId or lang from filename: ${fileName}. Skipping.`);
+            console.warn(`  ✗ Could not parse: ${fileName} (videoId: ${videoIdMatch ? 'found' : 'missing'}, lang: ${langMatch ? 'found' : 'missing'})`);
+            skippedCount++;
         }
     }
-    // console.log('Built caption file map:', JSON.stringify(captionFileMap, null, 2));
+    
+    console.log(`\nCaption file mapping complete:`);
+    console.log(`  - Successfully mapped: ${processedCount} files`);
+    console.log(`  - Skipped: ${skippedCount} files`);
+    console.log(`  - Total videos with captions: ${Object.keys(captionFileMap).length}`);
+    
+    // Show a summary of what was mapped
+    if (Object.keys(captionFileMap).length > 0) {
+        console.log(`\nAvailable caption files by video:`);
+        for (const [videoId, langs] of Object.entries(captionFileMap)) {
+            console.log(`  ${videoId}: ${Object.keys(langs).join(', ')}`);
+        }
+    }
 }
 
 /**
@@ -188,16 +212,11 @@ async function processVideos() {
     try {
         // Validate CAPTIONS_DIR existence
         if (!fs.existsSync(CAPTIONS_DIR)) {
-            console.warn(`CAPTIONS_DIR "${CAPTIONS_DIR}" does not exist. Creating it now.`);
-            try {
-                await fsp.mkdir(CAPTIONS_DIR, { recursive: true });
-                console.log(`Successfully created CAPTIONS_DIR: ${CAPTIONS_DIR}`);
-                console.log(`Please place your VTT caption files in this directory: ${CAPTIONS_DIR}`);
-            } catch (mkdirError) {
-                console.error(`Failed to create CAPTIONS_DIR "${CAPTIONS_DIR}": ${mkdirError.message}`);
-                console.error("Please create this directory manually and place your VTT files inside.");
-                return; // Stop if directory can't be created/accessed
-            }
+            console.warn(`CAPTIONS_DIR "${CAPTIONS_DIR}" does not exist.`);
+            console.error("Please create this directory manually and place your VTT files inside.");
+            console.error("Expected VTT filename format: [videoId]_title_lang.vtt");
+            console.error("Example: [vi5XpFQ2RTW0S5W2ojpW3wIz]_Emotional_Mastery-16_ar.vtt");
+            return; // Stop if directory doesn't exist
         }
         await processVideos();
     } catch (e) {
