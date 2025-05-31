@@ -1,0 +1,30 @@
+{
+  "timestamp": "2025-05-31T19:45:13.684Z",
+  "summary": {
+    "totalFiles": 2,
+    "successCount": 0,
+    "errorCount": 2,
+    "deletedCount": 0,
+    "allowedLanguages": [
+      "ar",
+      "en",
+      "fr",
+      "es",
+      "it"
+    ]
+  },
+  "results": [
+    {
+      "success": false,
+      "filename": "Emotional_Mastery-1.mp4.vtt",
+      "error": "No video ID found in filename",
+      "action": "skipped"
+    },
+    {
+      "success": false,
+      "filename": "[vi057I5LKytkjaEW5eqOiJo]_Emotional_Mastery-3_en.vtt",
+      "error": "Language detection failed",
+      "action": "skipped"
+    }
+  ]
+}
