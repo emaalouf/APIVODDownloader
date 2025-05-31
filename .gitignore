@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Token cache
+.token_cache.json
+
 # Downloaded videos
 downloads/
 

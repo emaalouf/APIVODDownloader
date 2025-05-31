@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
-const { getAccessToken } = require('./auth.js');
+const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
 
 // Configuration from environment variables
 const config = {
@@ -15,18 +15,14 @@ const config = {
 /**
  * Gets all captions for a specific video
  */
-async function getVideoCaptions(videoId, accessToken) {
+async function getVideoCaptions(videoId) {
     try {
         console.log(`📋 Getting captions for video ${videoId}...`);
         
-        const response = await axios.get(
-            `${config.apiBaseUrl}/videos/${videoId}/captions`,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`
-                }
-            }
-        );
+        const response = await makeAuthenticatedRequest({
+            method: 'GET',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions`
+        });
         
         if (response.status === 200) {
             console.log(`✅ Retrieved ${response.data.data.length} captions for video ${videoId}`);
@@ -45,18 +41,14 @@ async function getVideoCaptions(videoId, accessToken) {
 /**
  * Deletes a specific caption for a video
  */
-async function deleteCaption(videoId, language, accessToken) {
+async function deleteCaption(videoId, language) {
     try {
         console.log(`🗑️  Deleting ${language} caption for video ${videoId}...`);
         
-        const response = await axios.delete(
-            `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`
-                }
-            }
-        );
+        const response = await makeAuthenticatedRequest({
+            method: 'DELETE',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`
+        });
         
         if (response.status === 204) {
             console.log(`✅ Successfully deleted ${language} caption for video ${videoId}`);
@@ -81,7 +73,7 @@ async function deleteCaption(videoId, language, accessToken) {
 /**
  * Uploads a VTT caption file to API.video
  */
-async function uploadCaption(videoId, vttFilePath, accessToken, language = 'en') {
+async function uploadCaption(videoId, vttFilePath, language = 'en') {
     const filename = path.basename(vttFilePath);
     
     try {
@@ -103,17 +95,15 @@ async function uploadCaption(videoId, vttFilePath, accessToken, language = 'en')
             contentType: 'text/vtt'
         });
         
-        // Upload caption to API.video
-        const response = await axios.post(
-            `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`,
-            formData,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    ...formData.getHeaders()
-                }
+        // Upload caption using authenticated request
+        const response = await makeAuthenticatedRequest({
+            method: 'POST',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`,
+            data: formData,
+            headers: {
+                ...formData.getHeaders()
             }
-        );
+        });
         
         if (response.status === 200 || response.status === 201) {
             console.log(`✅ Successfully uploaded ${language} caption for video ${videoId}`);
@@ -132,13 +122,13 @@ async function uploadCaption(videoId, vttFilePath, accessToken, language = 'en')
 /**
  * Manages captions for a single video: get, delete, and re-upload
  */
-async function manageVideoCaption(videoId, vttFilePath, accessToken, language = 'en') {
+async function manageVideoCaption(videoId, vttFilePath, language = 'en') {
     console.log(`\n🎬 Managing ${language} caption for video ${videoId}`);
     console.log(`📁 VTT file: ${vttFilePath}`);
     
     try {
         // Step 1: Get existing captions
-        const captionsResult = await getVideoCaptions(videoId, accessToken);
+        const captionsResult = await getVideoCaptions(videoId);
         if (!captionsResult.success) {
             return { success: false, step: 'get_captions', error: captionsResult.error };
         }
@@ -149,7 +139,7 @@ async function manageVideoCaption(videoId, vttFilePath, accessToken, language = 
         // Step 2: Delete existing caption if it exists
         if (existingCaption) {
             console.log(`🔍 Found existing ${language} caption, deleting...`);
-            const deleteResult = await deleteCaption(videoId, language, accessToken);
+            const deleteResult = await deleteCaption(videoId, language);
             if (!deleteResult.success) {
                 return { success: false, step: 'delete_caption', error: deleteResult.error };
             }
@@ -158,7 +148,7 @@ async function manageVideoCaption(videoId, vttFilePath, accessToken, language = 
         }
         
         // Step 3: Upload new VTT file
-        const uploadResult = await uploadCaption(videoId, vttFilePath, accessToken, language);
+        const uploadResult = await uploadCaption(videoId, vttFilePath, language);
         if (!uploadResult.success) {
             return { success: false, step: 'upload_caption', error: uploadResult.error };
         }
@@ -202,10 +192,9 @@ function parseVideoIdFromVttFilename(filename) {
  */
 async function processAllVttFiles(language = null) {
     try {
-        // Get access token
-        console.log('🔑 Getting access token...');
-        const tokenData = await getAccessToken();
-        const accessToken = tokenData.access_token;
+        // Ensure we have valid authentication (this will handle token refresh automatically)
+        console.log('🔑 Ensuring valid authentication...');
+        await getAccessToken();
         
         // Find all VTT files
         if (!fs.existsSync(config.vttOutputFolder)) {
@@ -274,7 +263,7 @@ async function processAllVttFiles(language = null) {
             
             console.log(`\n📹 Processing ${i + 1}/${filesWithVideoId.length}: ${filename}`);
             
-            const result = await manageVideoCaption(videoId, fullPath, accessToken, targetLanguage);
+            const result = await manageVideoCaption(videoId, fullPath, targetLanguage);
             results.push({ ...result, filename, videoId });
             
             if (result.success) {
@@ -317,15 +306,14 @@ async function processAllVttFiles(language = null) {
  */
 async function processSingleVideo(videoId, vttFilePath, language = null) {
     try {
-        // Get access token
-        console.log('🔑 Getting access token...');
-        const tokenData = await getAccessToken();
-        const accessToken = tokenData.access_token;
+        // Ensure we have valid authentication (this will handle token refresh automatically)
+        console.log('🔑 Ensuring valid authentication...');
+        await getAccessToken();
         
         const targetLanguage = language || config.defaultLanguage;
         
         // Process the video
-        const result = await manageVideoCaption(videoId, vttFilePath, accessToken, targetLanguage);
+        const result = await manageVideoCaption(videoId, vttFilePath, targetLanguage);
         
         if (result.success) {
             console.log(`🎉 Caption management completed successfully for video ${videoId}!`);
