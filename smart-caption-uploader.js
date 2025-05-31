@@ -109,6 +109,12 @@ function getVttFilesByVideoId() {
  * Get existing captions for a video from API.video
  */
 async function getExistingCaptions(videoId) {
+    // In test mode, return empty array to simulate no existing captions
+    if (config.testMode || !client) {
+        console.log(`🔍 TEST MODE: Simulating no existing captions for ${videoId}`);
+        return [];
+    }
+    
     try {
         const captions = await client.captions.list(videoId);
         return captions.data || [];
@@ -136,8 +142,9 @@ async function uploadCaption(videoId, vttFilePath, language, isDefault = false) 
     try {
         console.log(`📤 Uploading ${language} caption for video ${videoId}...`);
         
-        if (config.dryRun) {
-            console.log(`🔍 DRY RUN: Would upload ${filePath} as ${language} caption`);
+        if (config.dryRun || config.testMode || !client) {
+            const mode = config.testMode ? 'TEST MODE' : 'DRY RUN';
+            console.log(`🔍 ${mode}: Would upload ${filePath} as ${language} caption${isDefault ? ' (default)' : ''}`);
             return true;
         }
         
@@ -168,8 +175,9 @@ async function updateCaption(videoId, vttFilePath, language) {
     try {
         console.log(`🔄 Updating ${language} caption for video ${videoId}...`);
         
-        if (config.dryRun) {
-            console.log(`🔍 DRY RUN: Would update ${filePath} as ${language} caption`);
+        if (config.dryRun || config.testMode || !client) {
+            const mode = config.testMode ? 'TEST MODE' : 'DRY RUN';
+            console.log(`🔍 ${mode}: Would update ${filePath} as ${language} caption`);
             return true;
         }
         
