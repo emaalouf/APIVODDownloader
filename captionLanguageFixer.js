@@ -80,24 +80,49 @@ async function moveCaption(videoId, fromLanguage, toLanguage, captionSrc) {
         
         // Step 1: Download the VTT content
         const axios = require('axios');
-        const vttResponse = await axios.get(captionSrc, {
-            timeout: 10000,
-            headers: {
-                'User-Agent': 'Caption-Language-Fixer/1.0'
+        let vttContent;
+        
+        try {
+            const vttResponse = await axios.get(captionSrc, {
+                timeout: 10000,
+                headers: {
+                    'User-Agent': 'Caption-Language-Fixer/1.0'
+                }
+            });
+            
+            if (vttResponse.status !== 200) {
+                return { success: false, error: `Failed to download VTT: HTTP ${vttResponse.status}` };
             }
-        });
-        
-        if (vttResponse.status !== 200) {
-            return { success: false, error: `Failed to download VTT: HTTP ${vttResponse.status}` };
+            
+            vttContent = vttResponse.data;
+            
+        } catch (downloadError) {
+            if (downloadError.response?.status === 404) {
+                console.log(`⚠️  VTT file not found at source URL. Caption may have been deleted.`);
+                console.log(`🗑️  Deleting the invalid ${fromLanguage} caption entry...`);
+                
+                // Just delete the broken caption since we can't move it
+                const deleteResult = await deleteCaption(videoId, fromLanguage);
+                return { 
+                    success: deleteResult.success, 
+                    error: deleteResult.success ? null : `Failed to delete broken caption: ${deleteResult.error}`,
+                    action: 'deleted_broken_caption'
+                };
+            }
+            return { success: false, error: `Failed to download VTT: ${downloadError.message}` };
         }
-        
-        const vttContent = vttResponse.data;
         
         // Step 2: Check if target language slot already exists
         const existingCaption = await getVideoCaption(videoId, toLanguage);
         if (existingCaption.success) {
-            console.log(`⚠️  Target language ${toLanguage} already has a caption. Skipping move.`);
-            return { success: false, error: `Target language ${toLanguage} already exists` };
+            console.log(`⚠️  Target language ${toLanguage} already has a caption.`);
+            console.log(`🤔 Would you like to overwrite it? Deleting existing ${toLanguage} caption first...`);
+            
+            // Delete existing target caption to make room for the correct one
+            const deleteExistingResult = await deleteCaption(videoId, toLanguage);
+            if (!deleteExistingResult.success) {
+                return { success: false, error: `Could not delete existing ${toLanguage} caption: ${deleteExistingResult.error}` };
+            }
         }
         
         // Step 3: Upload to new language slot
@@ -301,8 +326,24 @@ async function fixCaptionLanguages(options = {}) {
         console.log(`📖 Loading validation report: ${config.reportFile}`);
         const reportData = JSON.parse(fs.readFileSync(config.reportFile, 'utf8'));
         
-        // Filter mismatches
-        const mismatches = reportData.results.filter(result => result.status === 'mismatch');
+        // Filter mismatches and exclude null detected languages
+        const allMismatches = reportData.results.filter(result => result.status === 'mismatch');
+        const mismatches = allMismatches.filter(result => 
+            result.detectedLangCode && 
+            result.detectedLangCode !== 'null' && 
+            result.detectedLangCode.trim() !== ''
+        );
+        
+        const nullLanguageMismatches = allMismatches.filter(result => 
+            !result.detectedLangCode || 
+            result.detectedLangCode === 'null' || 
+            result.detectedLangCode.trim() === ''
+        );
+        
+        if (nullLanguageMismatches.length > 0) {
+            console.log(`\n⚠️  Found ${nullLanguageMismatches.length} mismatches with undetectable languages (will be skipped in move operations)`);
+            console.log('💡 Consider using --batch-delete for these captions instead');
+        }
         
         if (mismatches.length === 0) {
             console.log('🎉 No language mismatches found! All captions are correctly labeled.');
@@ -398,12 +439,32 @@ async function fixCaptionLanguages(options = {}) {
                 }
             }
             
+            // Also handle null language mismatches if any
+            if (nullLanguageMismatches.length > 0 && options.handleNullLanguages) {
+                console.log(`\n🗑️  Processing ${nullLanguageMismatches.length} undetectable language captions...`);
+                
+                for (const mismatch of nullLanguageMismatches) {
+                    console.log(`🗑️  Deleting undetectable caption: ${mismatch.videoTitle} (${mismatch.language})`);
+                    const deleteResult = await deleteCaption(mismatch.videoId, mismatch.language);
+                    
+                    results.push({
+                        mismatch,
+                        result: deleteResult,
+                        processedAt: new Date().toISOString()
+                    });
+                    
+                    if (config.delayBetweenRequests > 0) {
+                        await new Promise(resolve => setTimeout(resolve, config.delayBetweenRequests));
+                    }
+                }
+            }
+            
             // Save results
             const report = {
                 summary: {
                     processedAt: new Date().toISOString(),
                     mode: 'interactive',
-                    totalMismatches: mismatches.length,
+                    totalMismatches: mismatches.length + (options.handleNullLanguages ? nullLanguageMismatches.length : 0),
                     processed: results.length,
                     successful: results.filter(r => r.result.success).length,
                     skipped: results.filter(r => r.result.action === 'skipped').length,
@@ -456,6 +517,15 @@ if (require.main === module) {
         options.interactive = true;
     } else if (args.includes('--preview')) {
         options.interactive = false;
+    }
+    
+    // Additional options
+    if (args.includes('--handle-null-languages')) {
+        options.handleNullLanguages = true;
+    }
+    
+    if (args.includes('--overwrite-existing')) {
+        options.overwriteExisting = true;
     }
     
     fixCaptionLanguages(options).catch(error => {
