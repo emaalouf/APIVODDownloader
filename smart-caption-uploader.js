@@ -115,21 +115,29 @@ async function getExistingCaptions(videoId) {
         return [];
     }
     
-    console.log(`🔍 DEBUG: Attempting to fetch captions for videoId: "${videoId}" (type: ${typeof videoId})`);
-    
-    // Validate videoId parameter
-    if (!videoId || typeof videoId !== 'string') {
-        console.error(`❌ Invalid videoId: "${videoId}"`);
-        return [];
-    }
-    
     try {
-        console.log(`🔍 DEBUG: Calling client.captions.list("${videoId}")`);
-        const captionsResponse = await client.captions.list(videoId);
-        console.log(`🔍 DEBUG: Got response:`, captionsResponse);
+        // Try different approaches for the list method
+        let captionsResponse;
+        
+        // Approach 1: Simple call
+        try {
+            captionsResponse = await client.captions.list(videoId);
+        } catch (firstError) {
+            console.log(`🔍 First approach failed: ${firstError.message}`);
+            
+            // Approach 2: With query parameters object
+            try {
+                captionsResponse = await client.captions.list(videoId, {});
+            } catch (secondError) {
+                console.log(`🔍 Second approach failed: ${secondError.message}`);
+                
+                // Approach 3: Using object parameter
+                captionsResponse = await client.captions.list({ videoId: videoId });
+            }
+        }
+        
         return captionsResponse.data || [];
     } catch (error) {
-        console.log(`🔍 DEBUG: Error object:`, error);
         if (error.status === 404) {
             console.log(`⚠️  Video ${videoId} not found on API.video`);
             return null;
@@ -159,7 +167,30 @@ async function uploadCaption(videoId, vttFilePath, language, isDefault = false) 
             return true;
         }
         
-        const result = await client.captions.upload(videoId, language, filePath);
+        // Try different approaches for the upload method
+        let result;
+        
+        // Read the file as a buffer
+        const fileBuffer = fs.readFileSync(filePath);
+        
+        // Approach 1: Pass file path
+        try {
+            result = await client.captions.upload(videoId, language, filePath);
+        } catch (firstError) {
+            console.log(`🔍 Upload approach 1 failed: ${firstError.message}`);
+            
+            // Approach 2: Pass file buffer
+            try {
+                result = await client.captions.upload(videoId, language, fileBuffer);
+            } catch (secondError) {
+                console.log(`🔍 Upload approach 2 failed: ${secondError.message}`);
+                
+                // Approach 3: Using file stream
+                const fs_stream = require('fs');
+                const fileStream = fs_stream.createReadStream(filePath);
+                result = await client.captions.upload(videoId, language, fileStream);
+            }
+        }
         
         // If this should be the default caption, update it after upload
         if (isDefault) {
@@ -209,11 +240,15 @@ async function updateCaption(videoId, vttFilePath, language) {
             console.log(`⚠️  Could not delete existing ${language} caption (may not exist): ${deleteError.message}`);
         }
         
-        // Now upload the new caption
-        const result = await client.captions.upload(videoId, language, filePath);
+        // Now upload the new caption using the upload function
+        const success = await uploadCaption(videoId, vttFilePath, language, false);
         
-        console.log(`✅ Successfully updated ${language} caption for video ${videoId}`);
-        return true;
+        if (success) {
+            console.log(`✅ Successfully updated ${language} caption for video ${videoId}`);
+            return true;
+        } else {
+            throw new Error('Upload failed during update');
+        }
         
     } catch (error) {
         console.error(`❌ Failed to update ${language} caption for video ${videoId}:`, error.message);
