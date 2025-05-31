@@ -3,7 +3,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
-const ApiVideoClient = require('@api.video/nodejs-client').default;
+const ApiVideoClient = require('@api.video/nodejs-client');
 
 // Configuration from environment variables
 const config = {
