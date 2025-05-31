@@ -1,10 +1,11 @@
 {
-  "timestamp": "2025-05-31T19:50:23.617Z",
+  "timestamp": "2025-05-31T19:56:58.703Z",
   "summary": {
-    "totalFiles": 2,
-    "successCount": 1,
+    "totalFiles": 3,
+    "successCount": 2,
     "errorCount": 1,
-    "deletedCount": 0,
+    "fixedCount": 1,
+    "renamedCount": 1,
     "allowedLanguages": [
       "ar",
       "en",
@@ -29,6 +30,17 @@
       "isLanguageMismatch": false,
       "textSample": "This is a test caption.",
       "action": "validated"
+    },
+    {
+      "success": true,
+      "filename": "[vi057I5LKytkjaEW5eqOiJo]_Test_fr.vtt",
+      "videoId": "vi057I5LKytkjaEW5eqOiJo",
+      "expectedLanguage": "fr",
+      "detectedLanguage": "en",
+      "isLanguageMismatch": true,
+      "textSample": "Hello world, this is a test caption in English. This content is clearly in English but filename says",
+      "action": "fixed_and_renamed",
+      "newFilename": "[vi057I5LKytkjaEW5eqOiJo]_Test_en.vtt"
     }
   ]
 }
