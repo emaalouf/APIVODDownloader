@@ -48,9 +48,32 @@ function parseVttFilename(filename) {
 }
 
 /**
- * Uploads a VTT caption file to API.video
+ * Checks if a caption already exists for a video and language
  */
-async function uploadCaption(videoId, vttFilePath, language) {
+async function checkCaptionExists(videoId, language) {
+    try {
+        const response = await makeAuthenticatedRequest({
+            method: 'GET',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`
+        });
+        
+        return response.status === 200;
+    } catch (error) {
+        // 404 means caption doesn't exist
+        if (error.response?.status === 404) {
+            return false;
+        }
+        
+        // Other errors - assume it exists to be safe
+        console.log(`⚠️  Could not check ${language} caption existence: ${error.message}`);
+        return true;
+    }
+}
+
+/**
+ * Uploads a VTT caption file to API.video with existing caption check
+ */
+async function uploadCaption(videoId, vttFilePath, language, overwriteExisting = false) {
     const filename = path.basename(vttFilePath);
     
     try {
@@ -60,6 +83,29 @@ async function uploadCaption(videoId, vttFilePath, language) {
         // Check if VTT file exists
         if (!fs.existsSync(vttFilePath)) {
             throw new Error(`VTT file not found: ${vttFilePath}`);
+        }
+        
+        // Check if caption already exists
+        const captionExists = await checkCaptionExists(videoId, language);
+        if (captionExists && !overwriteExisting) {
+            console.log(`ℹ️  ${language} caption already exists, skipping upload`);
+            return { success: true, videoId, filename, language, action: 'skipped_existing' };
+        }
+        
+        if (captionExists && overwriteExisting) {
+            console.log(`🔄 ${language} caption exists, deleting before re-upload...`);
+            
+            // Delete existing caption first
+            const deleteResponse = await makeAuthenticatedRequest({
+                method: 'DELETE',
+                url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`
+            });
+            
+            if (deleteResponse.status !== 204) {
+                console.log(`⚠️  Could not delete existing ${language} caption, attempting upload anyway...`);
+            } else {
+                console.log(`✅ Deleted existing ${language} caption`);
+            }
         }
         
         // Read the VTT file
@@ -85,7 +131,7 @@ async function uploadCaption(videoId, vttFilePath, language) {
         
         if (response.status === 200 || response.status === 201) {
             console.log(`✅ Successfully uploaded ${language} caption for video ${videoId}`);
-            return { success: true, videoId, filename, language };
+            return { success: true, videoId, filename, language, action: 'uploaded' };
         } else {
             console.error(`❌ Failed to upload ${language} caption for video ${videoId}: ${response.status}`);
             return { success: false, videoId, filename, language, error: `HTTP ${response.status}` };
@@ -205,16 +251,35 @@ async function reUploadCorrectCaptions() {
             output: process.stdout
         });
         
-        const confirmation = await new Promise((resolve) => {
-            rl.question('Continue with caption upload? (yes/no): ', (answer) => {
+        console.log(`\n⚙️  Upload Options:`);
+        console.log(`  [1] Skip existing captions (recommended)`);
+        console.log(`  [2] Overwrite existing captions`);
+        console.log(`  [3] Cancel operation`);
+        
+        const choice = await new Promise((resolve) => {
+            rl.question('Choose option (1/2/3): ', (answer) => {
                 rl.close();
-                resolve(answer.toLowerCase().trim());
+                resolve(answer.trim());
             });
         });
         
-        if (confirmation !== 'yes' && confirmation !== 'y') {
-            console.log('👋 Operation cancelled');
-            return;
+        let overwriteExisting = false;
+        
+        switch (choice) {
+            case '1':
+                overwriteExisting = false;
+                console.log('✅ Will skip existing captions');
+                break;
+            case '2':
+                overwriteExisting = true;
+                console.log('⚠️  Will overwrite existing captions');
+                break;
+            case '3':
+                console.log('👋 Operation cancelled');
+                return;
+            default:
+                console.log('❌ Invalid choice. Operation cancelled');
+                return;
         }
         
         // Process uploads
@@ -222,6 +287,7 @@ async function reUploadCorrectCaptions() {
         
         const results = [];
         let successCount = 0;
+        let skippedCount = 0;
         let errorCount = 0;
         let videoCount = 0;
         
@@ -234,7 +300,8 @@ async function reUploadCorrectCaptions() {
                     const result = await uploadCaption(
                         vttFile.videoId,
                         vttFile.fullPath,
-                        vttFile.language
+                        vttFile.language,
+                        overwriteExisting
                     );
                     
                     results.push({
@@ -246,7 +313,11 @@ async function reUploadCorrectCaptions() {
                     });
                     
                     if (result.success) {
-                        successCount++;
+                        if (result.action === 'skipped_existing') {
+                            skippedCount++;
+                        } else {
+                            successCount++;
+                        }
                     } else {
                         errorCount++;
                         console.log(`❌ Failed: ${result.error}`);
@@ -275,6 +346,7 @@ async function reUploadCorrectCaptions() {
         console.log(`\n📊 Caption Re-Upload Summary:`);
         console.log(`📹 Videos processed: ${videoCount}`);
         console.log(`✅ Successful uploads: ${successCount}`);
+        console.log(`⏭️  Skipped existing: ${skippedCount}`);
         console.log(`❌ Errors: ${errorCount}`);
         console.log(`📝 Total processed: ${results.length}`);
         
@@ -286,6 +358,7 @@ async function reUploadCorrectCaptions() {
                 videosProcessed: videoCount,
                 totalUploads: results.length,
                 successful: successCount,
+                skipped: skippedCount,
                 errors: errorCount,
                 fixerReportUsed: config.fixerReportFile,
                 subtitlesFolder: config.subtitlesFolder
@@ -323,6 +396,7 @@ if (require.main === module) {
 module.exports = {
     reUploadCorrectCaptions,
     uploadCaption,
+    checkCaptionExists,
     getVttFilesForVideo,
     parseVttFilename
 }; 
