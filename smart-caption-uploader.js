@@ -115,10 +115,21 @@ async function getExistingCaptions(videoId) {
         return [];
     }
     
+    console.log(`🔍 DEBUG: Attempting to fetch captions for videoId: "${videoId}" (type: ${typeof videoId})`);
+    
+    // Validate videoId parameter
+    if (!videoId || typeof videoId !== 'string') {
+        console.error(`❌ Invalid videoId: "${videoId}"`);
+        return [];
+    }
+    
     try {
-        const captions = await client.captions.list(videoId);
-        return captions.data || [];
+        console.log(`🔍 DEBUG: Calling client.captions.list("${videoId}")`);
+        const captionsResponse = await client.captions.list(videoId);
+        console.log(`🔍 DEBUG: Got response:`, captionsResponse);
+        return captionsResponse.data || [];
     } catch (error) {
+        console.log(`🔍 DEBUG: Error object:`, error);
         if (error.status === 404) {
             console.log(`⚠️  Video ${videoId} not found on API.video`);
             return null;
@@ -148,9 +159,17 @@ async function uploadCaption(videoId, vttFilePath, language, isDefault = false) 
             return true;
         }
         
-        const result = await client.captions.upload(videoId, language, filePath, {
-            default: isDefault
-        });
+        const result = await client.captions.upload(videoId, language, filePath);
+        
+        // If this should be the default caption, update it after upload
+        if (isDefault) {
+            try {
+                await client.captions.update(videoId, language, { default: true });
+                console.log(`✅ Set ${language} as default caption for video ${videoId}`);
+            } catch (updateError) {
+                console.error(`⚠️  Uploaded ${language} caption but failed to set as default: ${updateError.message}`);
+            }
+        }
         
         console.log(`✅ Successfully uploaded ${language} caption for video ${videoId}`);
         return true;
@@ -181,7 +200,17 @@ async function updateCaption(videoId, vttFilePath, language) {
             return true;
         }
         
-        const result = await client.captions.update(videoId, language, filePath);
+        // For updating captions, we need to delete the old one and upload the new one
+        // because the API.video client doesn't have a direct file update method
+        try {
+            await client.captions.delete(videoId, language);
+            console.log(`🗑️  Deleted existing ${language} caption for video ${videoId}`);
+        } catch (deleteError) {
+            console.log(`⚠️  Could not delete existing ${language} caption (may not exist): ${deleteError.message}`);
+        }
+        
+        // Now upload the new caption
+        const result = await client.captions.upload(videoId, language, filePath);
         
         console.log(`✅ Successfully updated ${language} caption for video ${videoId}`);
         return true;
