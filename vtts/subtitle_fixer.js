@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
+const FormData = require('form-data');
+const { getAccessToken, makeAuthenticatedRequest } = require('../auth.js');
 
 // Configuration from environment variables
 const config = {
@@ -170,7 +171,7 @@ async function detectLanguageWithAI(text, retryCount = 0) {
                 'Authorization': `Bearer ${config.openRouterApiKey}`,
                 'Content-Type': 'application/json',
                 'HTTP-Referer': 'https://github.com/emaalouf/APIVODDownloader',
-                'X-Title': 'Subtitle Validator'
+                'X-Title': 'Subtitle Fixer'
             }
         });
         
@@ -246,11 +247,108 @@ async function deleteCaption(videoId, language) {
 }
 
 /**
- * Validates a single VTT file
+ * Uploads a VTT caption file to API.video
  */
-async function validateVttFile(filePath) {
+async function uploadCaption(videoId, vttContent, language, filename) {
+    try {
+        console.log(`📤 Uploading ${language} caption for video ${videoId}...`);
+        
+        // Create form data
+        const formData = new FormData();
+        formData.append('file', vttContent, {
+            filename: filename,
+            contentType: 'text/vtt'
+        });
+        
+        // Upload caption using authenticated request
+        const response = await makeAuthenticatedRequest({
+            method: 'POST',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${language}`,
+            data: formData,
+            headers: {
+                ...formData.getHeaders()
+            }
+        });
+        
+        if (response.status === 200 || response.status === 201) {
+            console.log(`✅ Successfully uploaded ${language} caption for video ${videoId}`);
+            return { success: true };
+        } else {
+            console.error(`❌ Failed to upload ${language} caption for video ${videoId}: ${response.status}`);
+            return { success: false, error: `HTTP ${response.status}` };
+        }
+        
+    } catch (error) {
+        console.error(`❌ Error uploading ${language} caption for video ${videoId}:`, error.response?.data || error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Moves a caption from one language slot to another
+ */
+async function moveCaption(videoId, fromLanguage, toLanguage, vttContent, filename) {
+    try {
+        console.log(`🔄 Moving caption from ${fromLanguage} to ${toLanguage} for video ${videoId}...`);
+        
+        // Step 1: Check if target language already has a caption
+        const captionsResult = await getVideoCaptions(videoId);
+        let targetCaptionExists = false;
+        
+        if (captionsResult.success) {
+            const existingTargetCaption = captionsResult.captions.find(caption => caption.srclang === toLanguage);
+            if (existingTargetCaption) {
+                targetCaptionExists = true;
+                console.log(`⚠️  Target language ${toLanguage} already has a caption. Will replace it.`);
+                
+                // Delete existing target caption first
+                const deleteTargetResult = await deleteCaption(videoId, toLanguage);
+                if (!deleteTargetResult.success) {
+                    return { success: false, error: `Could not delete existing ${toLanguage} caption: ${deleteTargetResult.error}` };
+                }
+            }
+        }
+        
+        // Step 2: Delete the incorrectly labeled caption (if different from target)
+        if (fromLanguage && fromLanguage !== toLanguage) {
+            const deleteResult = await deleteCaption(videoId, fromLanguage);
+            if (!deleteResult.success) {
+                console.log(`⚠️  Warning: Could not delete original ${fromLanguage} caption: ${deleteResult.error}`);
+            }
+        }
+        
+        // Step 3: Upload to correct language slot
+        const uploadResult = await uploadCaption(videoId, vttContent, toLanguage, filename);
+        if (!uploadResult.success) {
+            return { success: false, error: `Failed to upload to ${toLanguage}: ${uploadResult.error}` };
+        }
+        
+        console.log(`✅ Successfully moved caption from ${fromLanguage || 'unknown'} to ${toLanguage}`);
+        return { success: true, replaced: targetCaptionExists };
+        
+    } catch (error) {
+        console.error(`❌ Error moving caption:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Generates a new filename with the correct language
+ */
+function generateCorrectedFilename(parsedInfo, correctLanguage) {
+    if (!parsedInfo.hasVideoId) {
+        return `${parsedInfo.title}_${correctLanguage}.vtt`;
+    }
+    
+    return `[${parsedInfo.videoId}]_${parsedInfo.title}_${correctLanguage}.vtt`;
+}
+
+/**
+ * Fixes and replaces a single VTT file
+ */
+async function fixVttFile(filePath) {
     const filename = path.basename(filePath);
-    console.log(`\n📋 Validating: ${filename}`);
+    console.log(`\n📋 Fixing: ${filename}`);
     
     try {
         // Parse filename to extract video ID and expected language
@@ -313,7 +411,7 @@ async function validateVttFile(filePath) {
                 filename, 
                 videoId: parsedInfo.videoId,
                 detectedLanguage: detectedLanguageCode,
-                action: 'deleted_local_unsupported_language'
+                action: 'deleted_unsupported_language'
             };
         }
         
@@ -336,49 +434,54 @@ async function validateVttFile(filePath) {
             action: 'validated'
         };
         
-        // If there's a mismatch, we need to check and clean up the API.video captions
+        // If there's a mismatch or no expected language, we need to fix it
         if (isLanguageMismatch || !expectedLanguage) {
-            console.log(`⚠️  Language issue detected, checking API.video captions...`);
+            console.log(`🔧 Language mismatch detected, fixing and replacing caption...`);
             
-            // Get current captions from API.video
-            const captionsResult = await getVideoCaptions(parsedInfo.videoId);
-            if (captionsResult.success) {
-                console.log(`📊 Found ${captionsResult.captions.length} captions on API.video`);
+            // Move the caption to the correct language slot on API.video
+            const moveResult = await moveCaption(
+                parsedInfo.videoId, 
+                expectedLanguage, 
+                detectedLanguageCode, 
+                vttContent, 
+                filename
+            );
+            
+            if (moveResult.success) {
+                // Generate corrected filename
+                const correctedFilename = generateCorrectedFilename(parsedInfo, detectedLanguageCode);
+                const correctedFilePath = path.join(path.dirname(filePath), correctedFilename);
                 
-                for (const caption of captionsResult.captions) {
-                    console.log(`   - ${caption.srclang}: ${caption.src}`);
-                    
-                    // Delete captions that are not in allowed languages
-                    if (!ALLOWED_LANGUAGES.includes(caption.srclang)) {
-                        console.log(`🚫 Deleting non-allowed language: ${caption.srclang}`);
-                        await deleteCaption(parsedInfo.videoId, caption.srclang);
-                        result.action = 'deleted_remote_unsupported_language';
+                // Rename/move the local file to have the correct language
+                if (correctedFilename !== filename) {
+                    try {
+                        fs.renameSync(filePath, correctedFilePath);
+                        console.log(`📝 Renamed local file: ${filename} → ${correctedFilename}`);
+                        result.newFilename = correctedFilename;
+                        result.action = 'fixed_and_renamed';
+                    } catch (renameError) {
+                        console.error(`❌ Error renaming local file: ${renameError.message}`);
+                        result.action = 'fixed_remote_only';
                     }
-                    // Delete captions that don't match the detected language for this file
-                    else if (expectedLanguage && caption.srclang === expectedLanguage && isLanguageMismatch) {
-                        console.log(`🚫 Deleting mismatched caption: ${caption.srclang} (detected: ${detectedLanguageCode})`);
-                        await deleteCaption(parsedInfo.videoId, caption.srclang);
-                        result.action = 'deleted_remote_mismatched_language';
-                    }
+                } else {
+                    result.action = 'fixed_remote_caption';
                 }
+                
+                console.log(`✅ Successfully fixed caption: ${expectedLanguage || 'unknown'} → ${detectedLanguageCode}`);
+            } else {
+                console.error(`❌ Failed to fix caption: ${moveResult.error}`);
+                result.success = false;
+                result.error = moveResult.error;
+                result.action = 'fix_failed';
             }
-            
-            // Delete the local VTT file if there's a mismatch
-            if (isLanguageMismatch) {
-                try {
-                    fs.unlinkSync(filePath);
-                    console.log(`🗑️  Deleted local VTT file (language mismatch): ${filename}`);
-                    result.action = 'deleted_local_mismatched';
-                } catch (unlinkError) {
-                    console.error(`❌ Error deleting local file: ${unlinkError.message}`);
-                }
-            }
+        } else {
+            console.log(`✅ Caption is already correct, no action needed`);
         }
         
         return result;
         
     } catch (error) {
-        console.error(`❌ Error validating ${filename}:`, error.message);
+        console.error(`❌ Error fixing ${filename}:`, error.message);
         return { 
             success: false, 
             filename, 
@@ -389,13 +492,14 @@ async function validateVttFile(filePath) {
 }
 
 /**
- * Main function to validate all VTT files
+ * Main function to fix all VTT files
  */
-async function validateAllSubtitles() {
+async function fixAllSubtitles() {
     try {
-        console.log('🚀 Starting Subtitle Validation Process...');
+        console.log('🚀 Starting Subtitle Fixing Process...');
         console.log(`📁 Scanning folder: ${config.vttOutputFolder}`);
         console.log(`✅ Allowed languages: ${ALLOWED_LANGUAGES.join(', ')}`);
+        console.log(`🔧 Will fix and replace incorrect captions with correct ones`);
         
         // Ensure we have valid authentication
         console.log('🔑 Ensuring valid authentication...');
@@ -423,7 +527,7 @@ async function validateAllSubtitles() {
             return;
         }
         
-        console.log(`\n📊 Found ${vttFiles.length} VTT files to validate`);
+        console.log(`\n📊 Found ${vttFiles.length} VTT files to fix`);
         console.log(`🤖 Using OpenRouter AI for language detection`);
         console.log(`⏱️  Delay between files: ${config.delayBetweenFiles}ms`);
         console.log(`⏱️  OpenRouter delay: ${config.openRouterDelay}ms`);
@@ -431,19 +535,23 @@ async function validateAllSubtitles() {
         const results = [];
         let successCount = 0;
         let errorCount = 0;
-        let deletedCount = 0;
+        let fixedCount = 0;
+        let renamedCount = 0;
         
         for (let i = 0; i < vttFiles.length; i++) {
             const filePath = vttFiles[i];
             console.log(`\n📈 Progress: ${i + 1}/${vttFiles.length}`);
             
-            const result = await validateVttFile(filePath);
+            const result = await fixVttFile(filePath);
             results.push(result);
             
             if (result.success) {
                 successCount++;
-                if (result.action.includes('deleted')) {
-                    deletedCount++;
+                if (result.action.includes('fixed')) {
+                    fixedCount++;
+                }
+                if (result.newFilename) {
+                    renamedCount++;
                 }
             } else {
                 errorCount++;
@@ -463,41 +571,46 @@ async function validateAllSubtitles() {
                 totalFiles: vttFiles.length,
                 successCount,
                 errorCount,
-                deletedCount,
+                fixedCount,
+                renamedCount,
                 allowedLanguages: ALLOWED_LANGUAGES
             },
             results
         };
         
         // Save report
-        const reportFile = './subtitle_validation_report.json';
+        const reportFile = './subtitle_fixing_report.json';
         fs.writeFileSync(reportFile, JSON.stringify(reportData, null, 2));
         
-        console.log('\n📊 Validation Summary:');
-        console.log(`✅ Successfully validated: ${successCount}`);
+        console.log('\n📊 Fixing Summary:');
+        console.log(`✅ Successfully processed: ${successCount}`);
         console.log(`❌ Errors: ${errorCount}`);
-        console.log(`🗑️  Files/captions deleted: ${deletedCount}`);
+        console.log(`🔧 Captions fixed: ${fixedCount}`);
+        console.log(`📝 Files renamed: ${renamedCount}`);
         console.log(`💾 Report saved to: ${reportFile}`);
         
-        console.log('\n🎉 Subtitle validation completed!');
+        console.log('\n🎉 Subtitle fixing completed!');
         
     } catch (error) {
-        console.error('❌ Error in subtitle validation process:', error.message);
+        console.error('❌ Error in subtitle fixing process:', error.message);
         process.exit(1);
     }
 }
 
 // Export functions for use in other modules
 module.exports = {
-    validateAllSubtitles,
-    validateVttFile,
+    fixAllSubtitles,
+    fixVttFile,
     parseVttFilename,
     detectLanguageWithAI,
     getVideoCaptions,
-    deleteCaption
+    deleteCaption,
+    uploadCaption,
+    moveCaption,
+    generateCorrectedFilename
 };
 
 // Run if called directly
 if (require.main === module) {
-    validateAllSubtitles();
+    fixAllSubtitles();
 } 

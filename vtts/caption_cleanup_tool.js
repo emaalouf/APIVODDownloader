@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
+const { getAccessToken, makeAuthenticatedRequest } = require('../auth.js');
 
 // Configuration from environment variables
 const config = {
