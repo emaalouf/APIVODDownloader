@@ -7,7 +7,7 @@ const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
 // Configuration
 const config = {
     apiBaseUrl: 'https://ws.api.video',
-    delayBetweenRequests: 100, // 0.1 second delay between requests
+    delayBetweenRequests: 1000, // 1 second delay between requests
     allowedLanguages: ['en', 'ar', 'es', 'it', 'fr'], // Only these languages are allowed
     maxVideosPerPage: 25 // API pagination limit
 };
