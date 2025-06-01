@@ -8,7 +8,7 @@ const { getAccessToken, makeAuthenticatedRequest } = require('./auth.js');
 const config = {
     vttOutputFolder: process.env.VTT_OUTPUT_FOLDER || './subtitles',
     apiBaseUrl: 'https://ws.api.video',
-    delayBetweenRequests: 1000, // 1 second delay between requests
+    delayBetweenRequests: 300, // 0.3 second delay between requests
     arabicLanguageCode: 'ar'
 };
 
@@ -47,7 +47,7 @@ async function deleteArabicCaption(videoId) {
 /**
  * Uploads an Arabic VTT caption file to API.video
  */
-async function uploadArabicCaption(videoId, vttFilePath, accessToken) {
+async function uploadArabicCaption(videoId, vttFilePath) {
     const filename = path.basename(vttFilePath);
     
     try {
@@ -66,17 +66,15 @@ async function uploadArabicCaption(videoId, vttFilePath, accessToken) {
             contentType: 'text/vtt'
         });
         
-        // Upload caption to API.video
-        const response = await axios.post(
-            `${config.apiBaseUrl}/videos/${videoId}/captions/${config.arabicLanguageCode}`,
-            formData,
-            {
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    ...formData.getHeaders()
-                }
+        // Upload caption to API.video using authenticated request
+        const response = await makeAuthenticatedRequest({
+            method: 'POST',
+            url: `${config.apiBaseUrl}/videos/${videoId}/captions/${config.arabicLanguageCode}`,
+            data: formData,
+            headers: {
+                ...formData.getHeaders()
             }
-        );
+        });
         
         if (response.status === 200 || response.status === 201) {
             console.log(`✅ Arabic caption uploaded successfully for video ${videoId}`);
@@ -150,7 +148,7 @@ function findArabicSubtitleFiles() {
 /**
  * Processes a single Arabic subtitle file
  */
-async function processArabicSubtitle(file, accessToken) {
+async function processArabicSubtitle(file) {
     const { filename, filePath, videoId } = file;
     
     console.log(`\n🎬 Processing: ${filename}`);
@@ -178,7 +176,7 @@ async function processArabicSubtitle(file, accessToken) {
         await new Promise(resolve => setTimeout(resolve, 500));
         
         // Step 2: Upload new Arabic caption
-        const uploadResult = await uploadArabicCaption(videoId, filePath, accessToken);
+        const uploadResult = await uploadArabicCaption(videoId, filePath);
         
         return {
             success: uploadResult.success,
@@ -207,10 +205,8 @@ async function processAllArabicSubtitles() {
         console.log('🌍 Arabic Subtitle Maker - Starting Process...');
         console.log('🎯 Finding all subtitle files with "_ar" in their name...');
         
-        // Get access token
-        console.log('🔑 Getting access token...');
-        const tokenData = await getAccessToken();
-        const accessToken = tokenData.access_token;
+        // Ensure we have valid authentication (handled automatically by makeAuthenticatedRequest)
+        console.log('🔑 Ensuring valid authentication...');
         
         // Find all Arabic subtitle files
         const arabicFiles = findArabicSubtitleFiles();
@@ -256,7 +252,7 @@ async function processAllArabicSubtitles() {
             
             console.log(`\n📈 Progress: ${i + 1}/${filesWithVideoId.length}`);
             
-            const result = await processArabicSubtitle(file, accessToken);
+            const result = await processArabicSubtitle(file);
             results.push(result);
             
             if (result.success) {
@@ -309,10 +305,8 @@ async function processArabicSubtitleForVideo(videoId, vttFilePath) {
     try {
         console.log(`🌍 Processing Arabic subtitle for specific video: ${videoId}`);
         
-        // Get access token
-        console.log('🔑 Getting access token...');
-        const tokenData = await getAccessToken();
-        const accessToken = tokenData.access_token;
+        // Ensure we have valid authentication (handled automatically by makeAuthenticatedRequest)
+        console.log('🔑 Ensuring valid authentication...');
         
         // Check if VTT file exists
         if (!fs.existsSync(vttFilePath)) {
@@ -331,7 +325,7 @@ async function processArabicSubtitleForVideo(videoId, vttFilePath) {
         await new Promise(resolve => setTimeout(resolve, 500));
         
         // Upload new Arabic caption
-        const uploadResult = await uploadArabicCaption(videoId, vttFilePath, accessToken);
+        const uploadResult = await uploadArabicCaption(videoId, vttFilePath);
         
         if (uploadResult.success) {
             console.log(`🎉 Arabic subtitle processing completed successfully!`);
